@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Newton's Laws Simulator</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Atwood machines, inclines and blocks on a surface: predict acceleration, tension and contact forces, then run the motion to check.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <div class="brand">
+      <h1>Newton's Laws Simulator</h1>
+      <p>Set up a system, predict the forces and acceleration, then run it to check.</p>
+    </div>
+    <nav class="scenarios" role="tablist" aria-label="Choose a system">
+      <button type="button" role="tab" id="sc-atwood" data-scenario="atwood">
+        <svg viewBox="0 0 40 32" aria-hidden="true"><line x1="6" y1="3" x2="34" y2="3"/><line x1="20" y1="3" x2="20" y2="8"/><circle cx="20" cy="11" r="4"/><line x1="16" y1="11" x2="16" y2="20"/><line x1="24" y1="11" x2="24" y2="16"/><rect x="12" y="20" width="8" height="7"/><rect x="20" y="16" width="8" height="9"/></svg>
+        <span>Atwood machine</span>
+      </button>
+      <button type="button" role="tab" id="sc-modified" data-scenario="modified">
+        <svg viewBox="0 0 40 32" aria-hidden="true"><line x1="3" y1="14" x2="31" y2="14"/><rect x="8" y="7" width="9" height="7"/><line x1="17" y1="10" x2="31" y2="10"/><circle cx="31" cy="13" r="3"/><line x1="34" y1="13" x2="34" y2="20"/><rect x="30" y="20" width="8" height="7"/></svg>
+        <span>Modified Atwood</span>
+      </button>
+      <button type="button" role="tab" id="sc-incline" data-scenario="incline">
+        <svg viewBox="0 0 40 32" aria-hidden="true"><polyline points="3,28 36,28 36,8 3,28"/><rect x="14" y="13" width="9" height="7" transform="rotate(-31 18 17)"/></svg>
+        <span>Inclined plane</span>
+      </button>
+      <button type="button" role="tab" id="sc-horizontal" data-scenario="horizontal">
+        <svg viewBox="0 0 40 32" aria-hidden="true"><line x1="2" y1="24" x2="38" y2="24"/><rect x="8" y="15" width="9" height="9"/><rect x="17" y="17" width="7" height="7"/><line x1="24" y1="20" x2="28" y2="20"/><rect x="28" y="16" width="8" height="8"/></svg>
+        <span>Blocks on a surface</span>
+      </button>
+    </nav>
+  </header>
+
+  <main class="layout">
+    <aside class="controls" id="controls" aria-label="Set up the system"></aside>
+
+    <section class="stage" aria-label="Simulation">
+      <div class="scene-card">
+        <div class="scene-toolbar">
+          <div class="transport">
+            <button type="button" class="btn btn-primary" id="btn-play">Play</button>
+            <button type="button" class="btn" id="btn-reset">Reset</button>
+          </div>
+          <label class="inline">Speed
+            <select id="sel-speed">
+              <option value="1">1×</option>
+              <option value="0.5">½×</option>
+              <option value="0.25">¼×</option>
+              <option value="0.1">0.1×</option>
+            </select>
+          </label>
+          <label class="inline check"><input type="checkbox" id="chk-strobe"> Motion dots every 0.1 s</label>
+        </div>
+        <div class="canvas-wrap"><canvas id="scene" aria-label="Animation of the system"></canvas></div>
+        <div class="readouts">
+          <div class="readout"><span class="rl">Time</span><span class="rv" id="ro-t">0.00 s</span></div>
+          <div class="readout"><span class="rl">Displacement</span><span class="rv" id="ro-d">0.00 m</span></div>
+          <div class="readout"><span class="rl">Velocity</span><span class="rv" id="ro-v">0.00 m/s</span></div>
+          <label class="readout track">
+            <span class="rl">Tracking</span>
+            <select id="sel-track"></select>
+          </label>
+        </div>
+        <p class="status" id="status" role="status"></p>
+      </div>
+
+      <div class="tabs" role="tablist" aria-label="Analysis">
+        <button type="button" role="tab" data-tab="check" id="tab-check">Predict &amp; check</button>
+        <button type="button" role="tab" data-tab="fbd" id="tab-fbd">Free-body diagrams</button>
+        <button type="button" role="tab" data-tab="graph" id="tab-graph">Motion graph</button>
+        <button type="button" role="tab" data-tab="solution" id="tab-solution">Worked solution</button>
+      </div>
+
+      <div class="panel" id="panel-check" role="tabpanel" aria-labelledby="tab-check">
+        <p class="hint">Work out each value on paper, type your answers, then press <b>Check</b>. Answers within 2% count as correct. Enter magnitudes; the sign does not matter.</p>
+        <form id="check-form" autocomplete="off">
+          <div id="check-rows"></div>
+          <div class="check-actions">
+            <button type="submit" class="btn btn-primary">Check my answers</button>
+            <button type="button" class="btn" id="btn-reveal">Show answers</button>
+            <button type="button" class="btn btn-quiet" id="btn-clear">Clear</button>
+            <span class="score" id="score" aria-live="polite"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="panel" id="panel-fbd" role="tabpanel" aria-labelledby="tab-fbd" hidden>
+        <div class="fbd-head">
+          <p class="hint">Arrow lengths show relative size within each diagram. Matching colors mark forces that come from the same string or contact.</p>
+          <div class="fbd-opts">
+            <label class="inline check"><input type="checkbox" id="chk-fbd-scale"> Same scale on every diagram</label>
+            <label class="inline check"><input type="checkbox" id="chk-fbd-values"> Show values</label>
+          </div>
+        </div>
+        <div class="fbd-scroll"><canvas id="fbd" aria-label="Free-body diagrams"></canvas></div>
+        <div class="legend" id="fbd-legend"></div>
+        <div class="pairs" id="fbd-pairs"></div>
+      </div>
+
+      <div class="panel" id="panel-graph" role="tabpanel" aria-labelledby="tab-graph" hidden>
+        <div class="fbd-head">
+          <div class="seg" role="group" aria-label="Graph type">
+            <button type="button" data-graph="x" class="on">Position–time</button>
+            <button type="button" data-graph="v">Velocity–time</button>
+            <button type="button" data-graph="a">Acceleration–time</button>
+          </div>
+          <p class="hint">Press Play to draw the graph for the tracked object. The slope of the velocity–time graph is the acceleration.</p>
+        </div>
+        <div class="graph-wrap"><canvas id="graph" aria-label="Motion graph"></canvas></div>
+      </div>
+
+      <div class="panel" id="panel-solution" role="tabpanel" aria-labelledby="tab-solution" hidden>
+        <div id="solution-lock" class="lock">
+          <p>Make your predictions first. The worked solution opens after you check your answers or choose <b>Show answers</b>.</p>
+          <button type="button" class="btn" id="btn-unlock">Open the solution now</button>
+        </div>
+        <div id="solution" class="solution" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>Strings and pulleys are massless and frictionless. Every run starts from rest. Positive directions: right or up the incline for blocks on a surface, down for a hanging block, and up for mass 1 / down for mass 2 in the Atwood machine.</p>
+  </footer>
+</div>
+<script src="js/physics.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
