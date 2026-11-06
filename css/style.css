@@ -37,6 +37,13 @@
   --b3: #1c4a38;
   --b4: #5c2639;
   --b5: #3e2d68;
+  /* human figures */
+  --fig-skin: #e2b38c;
+  --fig-shirt: #5b8def;
+  --fig-shorts: #3c4a63;
+  --fig-shoe: #eef1f6;
+  --fig-hair: #3a2618;
+  --track: #5a2e26;
 
   --font-display: 'Bricolage Grotesque', 'Segoe UI', system-ui, sans-serif;
   --font-body: 'Atkinson Hyperlegible', 'Segoe UI', system-ui, -apple-system, sans-serif;
@@ -78,6 +85,12 @@
   --b3: #d3f1e3;
   --b4: #ffd8e1;
   --b5: #e6dcff;
+  --fig-skin: #d39a6e;
+  --fig-shirt: #2f6fdf;
+  --fig-shorts: #2b3445;
+  --fig-shoe: #1d2433;
+  --fig-hair: #3b2a20;
+  --track: #c98a6c;
   color-scheme: light;
 }
 

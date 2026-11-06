@@ -888,7 +888,8 @@
   function readColors() {
     const cs = getComputedStyle(document.documentElement);
     const names = ['ink', 'muted', 'line', 'panel', 'scene', 'grid', 'bench', 'bench-edge', 'accent',
-      'f-w', 'f-n', 'f-f', 'f-a', 'l1', 'l2', 'l3', 'l4', 'b1', 'b2', 'b3', 'b4', 'b5'];
+      'f-w', 'f-n', 'f-f', 'f-a', 'l1', 'l2', 'l3', 'l4', 'b1', 'b2', 'b3', 'b4', 'b5',
+      'fig-skin', 'fig-shirt', 'fig-shorts', 'fig-shoe', 'fig-hair', 'track'];
     C = {};
     names.forEach((nm) => (C[nm] = cs.getPropertyValue('--' + nm).trim() || '#888'));
     C.fontBody = cs.getPropertyValue('--font-body').trim() || 'sans-serif';
@@ -1578,7 +1579,7 @@
       ctx.save();
       ctx.translate(cx, cy);
       ctx.rotate(-s.tilt);
-      if (s.body.kind !== 'hanging') {
+      if (s.body.kind !== 'hanging' && !s.pose) {
         ctx.strokeStyle = C.muted;
         ctx.setLineDash([4, 4]);
         ctx.beginPath();
@@ -1587,12 +1588,15 @@
         ctx.stroke();
         ctx.setLineDash([]);
       }
-      ctx.fillStyle = bodyColor(s.idx);
-      ctx.strokeStyle = C.ink;
-      ctx.lineWidth = 1.4;
-      ctx.fillRect(-26, -20, 52, 40);
-      ctx.strokeRect(-26, -20, 52, 40);
+      if (!s.pose) {
+        ctx.fillStyle = bodyColor(s.idx);
+        ctx.strokeStyle = C.ink;
+        ctx.lineWidth = 1.4;
+        ctx.fillRect(-26, -20, 52, 40);
+        ctx.strokeRect(-26, -20, 52, 40);
+      }
       ctx.restore();
+      if (s.pose) drawFigureInCell(ctx, s.pose, cx, cy);
 
       // group arrows sharing a direction so they sit side by side
       const groups = {};
@@ -2287,65 +2291,240 @@
     ['sprint', 'Sprint start'],
   ];
 
-  // A simple person: hip at (x, yHip), feet on the floor if yFoot is given.
-  function drawPerson(ctx, view, x, yHip, opts = {}) {
+  /* ---------- Human figures ----------
+   * Side view, facing right. A pose is a set of joint positions in metres.
+   * Angles for limbs are measured from straight down, positive = forward (+x). */
+  const FIG = { shin: 0.42, thigh: 0.44, ankle: 0.06, torso: 0.55, neck: 0.07, head: 0.115, upper: 0.29, fore: 0.27, foot: 0.17 };
+  const STAND_HIP = FIG.ankle + FIG.shin + FIG.thigh; // 0.92 m
+  const vadd = (p, q) => ({ x: p.x + q.x, y: p.y + q.y });
+  const polar = (len, ang) => ({ x: len * Math.sin(ang), y: -len * Math.cos(ang) });
+  const clamp01 = (x) => Math.max(0, Math.min(1, x));
+  const lerp = (a, b, f) => a + (b - a) * f;
+
+  // Two-segment limb from joint H to end A: where does the middle joint go?
+  // sign +1 bends forward (knees), -1 bends backward.
+  function ik(H, A, L1, L2, sign) {
+    const dx = A.x - H.x;
+    const dy = A.y - H.y;
+    const D = Math.max(1e-6, Math.hypot(dx, dy));
+    const Dc = Math.min(D, L1 + L2 - 1e-6);
+    const ux = dx / D;
+    const uy = dy / D;
+    const a = (L1 * L1 - L2 * L2 + Dc * Dc) / (2 * Dc);
+    const h = Math.sqrt(Math.max(0, L1 * L1 - a * a));
+    return { x: H.x + ux * a + sign * -uy * h, y: H.y + uy * a + sign * ux * h };
+  }
+
+  function armsFrom(shoulder, armA, bend = 0.45) {
+    return [armA - 0.14, armA + 0.14].map((a) => {
+      const elbow = vadd(shoulder, polar(FIG.upper, a));
+      return { elbow, hand: vadd(elbow, polar(FIG.fore, a + bend)) };
+    });
+  }
+
+  /* Standing, crouching or in the air.
+   * o = { x: feet x, floor: floor height, yHip, contact, armA, lean, tuck } */
+  function poseUpright(o) {
+    const floor = o.floor || 0;
+    const crouch = o.contact ? clamp01((floor + STAND_HIP - o.yHip) / 0.55) : 0;
+    const hip = { x: o.x - 0.24 * crouch, y: o.yHip };
+    const lean = (o.lean || 0) + 0.75 * crouch;
+    const legs = [-0.04, 0.04].map((off) => {
+      let ankle;
+      let toe;
+      if (o.contact) {
+        ankle = { x: o.x + off, y: floor + FIG.ankle };
+        toe = { x: ankle.x + FIG.foot, y: floor + 0.025 };
+      } else {
+        const tuck = o.tuck ?? 0.12;
+        ankle = vadd(hip, { x: 0.06 + off, y: -(FIG.thigh + FIG.shin) * (1 - tuck) });
+        toe = vadd(ankle, { x: 0.12, y: -0.11 });
+      }
+      return { knee: ik(hip, ankle, FIG.thigh, FIG.shin, 1), ankle, toe };
+    });
+    const shoulder = vadd(hip, { x: FIG.torso * Math.sin(lean), y: FIG.torso * Math.cos(lean) });
+    const head = vadd(shoulder, { x: (FIG.neck + FIG.head) * Math.sin(lean * 0.55), y: (FIG.neck + FIG.head) * Math.cos(lean * 0.55) });
+    return { hip, legs, shoulder, head, arms: armsFrom(shoulder, o.armA ?? 0.15), eye: { x: 0.055, y: 0.02 } };
+  }
+
+  /* Running stride. phase advances with distance; lean in radians. */
+  function poseRun(xHip, phase, lean, floor = 0) {
+    const rel = { x: 0, y: 0 };
+    const legs = [0, Math.PI].map((off) => {
+      const ph = phase + off;
+      const th = 0.62 * Math.sin(ph); // thigh swing
+      const kn = 0.3 + 0.95 * (0.5 - 0.5 * Math.sin(ph)); // knee bends most when the leg trails
+      const knee = vadd(rel, polar(FIG.thigh, th));
+      const ankle = vadd(knee, polar(FIG.shin, th - kn));
+      const toe = vadd(ankle, polar(FIG.foot, th - kn + Math.PI / 2));
+      return { knee, ankle, toe };
+    });
+    let minY = Infinity;
+    legs.forEach((l) => (minY = Math.min(minY, l.ankle.y - FIG.ankle * 0.5, l.toe.y)));
+    const dy = floor + 0.02 - minY;
+    const shift = (p) => ({ x: p.x + xHip, y: p.y + dy });
+    const hip = shift(rel);
+    const L = legs.map((l) => ({ knee: shift(l.knee), ankle: shift(l.ankle), toe: shift(l.toe) }));
+    const shoulder = vadd(hip, { x: FIG.torso * Math.sin(lean), y: FIG.torso * Math.cos(lean) });
+    const head = vadd(shoulder, { x: (FIG.neck + FIG.head) * Math.sin(lean * 0.7), y: (FIG.neck + FIG.head) * Math.cos(lean * 0.7) });
+    const arms = [0, Math.PI].map((off) => {
+      const a = -0.85 * Math.sin(phase + off);
+      const elbow = vadd(shoulder, polar(FIG.upper, a));
+      return { elbow, hand: vadd(elbow, polar(FIG.fore, a + 1.5)) };
+    });
+    // the arm on the far side swings with the near leg
+    return { hip, legs: L, shoulder, head, arms: [arms[1], arms[0]], eye: { x: 0.055, y: 0.02 } };
+  }
+
+  /* Lying on the back, head to the left, the near leg raised to the point `foot`. */
+  function poseLying(y, foot) {
+    const hip = { x: -1.3, y: y + 0.08 };
+    const shoulder = { x: -2.05, y: y + 0.1 };
+    const head = { x: -2.27, y: y + 0.13 };
+    const ankleNear = { x: foot.x - 0.04, y: foot.y };
+    const kneeNear = ik(hip, ankleNear, FIG.thigh, FIG.shin, 1);
+    const ankleFar = { x: -0.42, y: y + 0.06 };
+    const kneeFar = ik(hip, ankleFar, FIG.thigh, FIG.shin, 1);
+    return {
+      hip,
+      shoulder,
+      head,
+      legs: [
+        { knee: kneeFar, ankle: ankleFar, toe: { x: ankleFar.x + 0.03, y: ankleFar.y + FIG.foot } },
+        { knee: kneeNear, ankle: ankleNear, toe: { x: ankleNear.x + 0.04, y: ankleNear.y + FIG.foot } },
+      ],
+      arms: [
+        { elbow: { x: -1.8, y: y + 0.05 }, hand: { x: -1.55, y: y + 0.06 } },
+        { elbow: { x: -1.8, y: y + 0.07 }, hand: { x: -1.56, y: y + 0.09 } },
+      ],
+      eye: { x: 0.01, y: 0.06 },
+      lying: true,
+    };
+  }
+
+  /* Draw a pose. o = { alpha, label, labelLeft } */
+  function drawFigure(ctx, view, pose, o = {}) {
     const P = view.P;
-    const L = opts.leg || 0.92;
-    const yFoot = opts.yFoot ?? yHip - L;
-    const reach = Math.max(0, yHip - yFoot);
-    const k = reach < L ? Math.sqrt(Math.max(0, (L / 2) ** 2 - (reach / 2) ** 2)) : 0; // knee bends forward
-    const swing = opts.swing || 0;
-    const torso = 0.62;
-    const headR = 0.12;
+    const k = view.k;
     ctx.save();
-    ctx.strokeStyle = C.ink;
-    ctx.lineWidth = Math.max(2, view.k * 0.045);
+    if (o.alpha != null) ctx.globalAlpha = o.alpha;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    const line = (pts) => {
+    const edge = Math.max(1.5, k * 0.018);
+    const seg = (a, b, w, color, dim) => {
+      const [x1, y1] = P(a.x, a.y);
+      const [x2, y2] = P(b.x, b.y);
+      ctx.strokeStyle = C.scene;
+      ctx.lineWidth = w * k + edge * 2;
       ctx.beginPath();
-      pts.forEach(([a, b], i) => {
-        const [px, py] = P(a, b);
-        i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
-      });
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
       ctx.stroke();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = w * k;
+      ctx.stroke();
+      if (dim) {
+        // the far-side limb is shaded toward the background
+        ctx.save();
+        ctx.globalAlpha = (o.alpha ?? 1) * 0.38;
+        ctx.strokeStyle = C.scene;
+        ctx.stroke();
+        ctx.restore();
+      }
     };
-    // legs (two, slightly apart; swing for running)
-    for (const side of [-1, 1]) {
-      const dx = side * 0.06 + side * swing * 0.25;
-      const knee = [x + dx * 0.5 + k, (yHip + yFoot) / 2];
-      line([[x, yHip], knee, [x + dx, yFoot]]);
-    }
-    // torso, head, arms
-    const lean = opts.lean || 0;
-    const shoulder = [x + lean, yHip + torso];
-    line([[x, yHip], shoulder]);
-    const [hx, hy] = P(shoulder[0] + lean * 0.3, shoulder[1] + headR + 0.04);
-    ctx.fillStyle = bodyColor(0);
+    const leg = (l, dim) => {
+      seg(pose.hip, l.knee, 0.14, C['fig-shorts'], dim);
+      seg(l.knee, l.ankle, 0.1, C['fig-skin'], dim);
+      seg(l.ankle, l.toe, 0.075, C['fig-shoe'], dim);
+    };
+    const arm = (a, dim) => {
+      seg(pose.shoulder, a.elbow, 0.09, C['fig-shirt'], dim);
+      seg(a.elbow, a.hand, 0.072, C['fig-skin'], dim);
+    };
+    arm(pose.arms[0], true);
+    leg(pose.legs[0], true);
+    // torso and neck
+    const neckBase = vadd(pose.shoulder, { x: (pose.head.x - pose.shoulder.x) * 0.25, y: (pose.head.y - pose.shoulder.y) * 0.25 });
+    seg(pose.shoulder, pose.head, 0.065, C['fig-skin']);
+    seg(pose.hip, neckBase, 0.27, C['fig-shirt']);
+    seg(pose.hip, pose.hip, 0.2, C['fig-shorts']);
+    leg(pose.legs[1], false);
+    // head with hair and an eye
+    const [hx, hy] = P(pose.head.x, pose.head.y);
+    const r = FIG.head * k;
+    ctx.fillStyle = C['fig-skin'];
+    ctx.strokeStyle = C.scene;
+    ctx.lineWidth = edge;
     ctx.beginPath();
-    ctx.arc(hx, hy, headR * view.k, 0, 2 * Math.PI);
+    ctx.arc(hx, hy, r, 0, 2 * Math.PI);
     ctx.fill();
     ctx.stroke();
-    const arm = opts.arms || 'down';
-    for (const side of [-1, 1]) {
-      const end = arm === 'up' ? [shoulder[0] + side * 0.18, shoulder[1] + 0.45] : [shoulder[0] + side * 0.16 - swing * side * 0.2, shoulder[1] - 0.5];
-      line([shoulder, [shoulder[0] + side * 0.1, shoulder[1] - 0.25 + (arm === 'up' ? 0.35 : 0)], end]);
-    }
-    if (opts.label) {
+    ctx.fillStyle = C['fig-hair'];
+    ctx.beginPath();
+    if (pose.lying) ctx.arc(hx, hy, r, Math.PI * 0.5, Math.PI * 1.25);
+    else ctx.arc(hx, hy, r, Math.PI * 1.02, Math.PI * 1.85);
+    ctx.closePath();
+    ctx.fill();
+    const [ex, ey] = P(pose.head.x + pose.eye.x, pose.head.y + pose.eye.y);
+    ctx.fillStyle = C.scene;
+    ctx.beginPath();
+    ctx.arc(ex, ey, Math.max(1.2, k * 0.012), 0, 2 * Math.PI);
+    ctx.fill();
+    arm(pose.arms[1], false);
+    if (o.label) {
+      const size = Math.max(12, Math.min(16, k * 0.11));
+      const at = vadd(pose.hip, { x: (pose.shoulder.x - pose.hip.x) * 0.5, y: (pose.shoulder.y - pose.hip.y) * 0.5 });
+      const [lx, ly] = P(at.x + (o.labelLeft ? -0.3 : 0.3), at.y);
+      ctx.globalAlpha = 1;
       ctx.fillStyle = C.ink;
-      ctx.font = '700 ' + Math.max(12, Math.min(16, view.k * 0.11)) + 'px ' + C.fontMono;
-      ctx.textAlign = 'left';
+      ctx.font = '700 ' + size + 'px ' + C.fontMono;
+      ctx.textAlign = o.labelLeft ? 'right' : 'left';
       ctx.textBaseline = 'middle';
-      if (opts.labelLeft) {
-        ctx.textAlign = 'right';
-        const [lx, ly] = P(x - 0.24 + lean, yHip + torso * 0.55);
-        ctx.fillText(opts.label, lx, ly);
-      } else {
-        const [lx, ly] = P(x + 0.22 + lean, yHip + torso * 0.55);
-        ctx.fillText(opts.label, lx, ly);
-      }
+      ctx.fillText(o.label, lx, ly);
     }
     ctx.restore();
+  }
+
+  // A vertical dimension marker: a double-headed line from y0 to y1 at x, with a label.
+  function dimV(ctx, view, x, y0, y1, text, color, side = 'left') {
+    if (Math.abs(y1 - y0) < 1e-3) return;
+    const [px, p0] = view.P(x, y0);
+    const [, p1] = view.P(x, y1);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(px - 6, p0);
+    ctx.lineTo(px + 6, p0);
+    ctx.moveTo(px - 6, p1);
+    ctx.lineTo(px + 6, p1);
+    ctx.stroke();
+    const head = Math.min(8, Math.abs(p1 - p0) / 3);
+    const dir = Math.sign(p1 - p0);
+    ctx.beginPath();
+    ctx.moveTo(px, p0 + dir * head);
+    ctx.lineTo(px, p1 - dir * head);
+    ctx.stroke();
+    for (const [py, d] of [[p0, dir], [p1, -dir]]) {
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px - 4, py + d * head);
+      ctx.lineTo(px + 4, py + d * head);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.font = '700 15px ' + C.fontMono;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = side === 'left' ? 'right' : 'left';
+    ctx.fillText(text, px + (side === 'left' ? -10 : 10), (p0 + p1) / 2);
+    ctx.restore();
+  }
+
+  // Draw a pose inside a free-body diagram cell, centred on the hips.
+  function drawFigureInCell(ctx, pose, cx, cy, scale = 78) {
+    const view = { k: scale, P: (x, y) => [cx + (x - pose.hip.x) * scale, cy - (y - pose.hip.y) * scale] };
+    drawFigure(ctx, view, pose, { alpha: 0.55 });
   }
 
   function labelText(ctx, text, x, y, color, align = 'center', size = 14, weight = 700, font) {
@@ -2526,7 +2705,9 @@
       ctx.fillRect(qx0, qy0, qx1 - qx0, qy1 - qy0);
       ctx.strokeRect(qx0, qy0, qx1 - qx0, qy1 - qy0);
       ctx.restore();
-      drawPerson(ctx, view, -0.4, yb + 0.12 + 0.92, { yFoot: yb + 0.12, arms: st.a < -an.g + 1e-9 ? 'up' : 'down', label: W < 520 ? '' : massText(0, an.m) + ' kg', labelLeft: true });
+      const weightless = st.a < -an.g + 1e-9;
+      const rider = poseUpright({ x: -0.48, floor: yb + 0.12, yHip: yb + 0.12 + STAND_HIP, contact: true, armA: weightless ? 2.6 : 0.12 });
+      drawFigure(ctx, view, rider, { label: W < 520 ? '' : massText(0, an.m) + ' kg', labelLeft: true });
       // scale display on the back wall
       const [dx0, dy0] = P(0.15, yb + 2.3);
       const [dx1, dy1] = P(1.05, yb + 1.45);
@@ -2566,6 +2747,7 @@
         body: an.bodies[0],
         idx: 0,
         tilt: 0,
+        pose: poseUpright({ x: 0, yHip: STAND_HIP, contact: true, armA: st.a < -an.g + 1e-9 ? 2.6 : 0.12 }),
         arrows: [
           { dir: { x: 0, y: -1 }, mag: an.W, color: C['f-w'], label: 'W' },
           { dir: { x: 0, y: 1 }, mag: st.N, color: C['f-n'], label: 'N' },
@@ -2750,13 +2932,29 @@
       cur().mode === 'sprint'
         ? { x: 'position (m)', v: 'velocity (m/s)', a: 'forward force from ground (N)' }
         : { x: 'hip height (m)', v: 'velocity (m/s)', a: 'force from the floor (N)' },
+    // The pose that matches the physics at time t
+    poseAt(an, t) {
+      const st = BODY.state(an, t);
+      if (an.mode === 'jump') {
+        if (t <= an.tPush) return poseUpright({ x: 0.2, yHip: st.y, contact: true, armA: lerp(-0.9, 2.7, clamp01(t / an.tPush)) });
+        const f = clamp01((t - an.tPush) / (2 * an.tUp));
+        return poseUpright({ x: 0.2, yHip: st.y, contact: false, armA: lerp(2.7, 0.7, f), tuck: 0.08 });
+      }
+      if (an.mode === 'land') {
+        if (t <= an.tFall) return poseUpright({ x: 0.2, yHip: st.y, contact: false, armA: 1.35, tuck: 0.02 });
+        return poseUpright({ x: 0.2, yHip: st.y, contact: true, armA: lerp(1.35, 0.95, clamp01((t - an.tFall) / an.tStop)) });
+      }
+      const stride = 1.2 + 0.12 * an.v;
+      const lean = 0.12 + 0.33 * (1 - Math.min(1, st.v / an.v));
+      return poseRun(st.y, (st.y / stride) * 2 * Math.PI + 0.6, lean);
+    },
     draw(ctx, W, H, t) {
       const an = analysis;
       if (an.kind === 'traction') return BODY.drawTraction(ctx, W, H);
       if (an.mode === 'sprint') return BODY.drawSprint(ctx, W, H, t);
       const st = BODY.state(an, t);
-      const top = an.mode === 'jump' ? HIP + an.h + 0.9 : HIP + an.h + 0.9;
-      const view = fitView({ x0: -1.9, x1: 1.9, y0: -0.15, y1: Math.max(2.2, top + 0.2) }, W, H);
+      const top = an.mode === 'jump' ? HIP + an.h + 0.95 : Math.max(an.h + HIP + 0.95, 2.2);
+      const view = fitView({ x0: -1.9, x1: 1.9, y0: -0.15, y1: Math.max(2.2, top + 0.15) }, W, H);
       const P = view.P;
       drawGrid(ctx, W, H, view);
       drawFloor(ctx, view, -1.9, 1.9);
@@ -2766,7 +2964,7 @@
       ctx.lineWidth = 1;
       const maxH = Math.floor(Math.max(2, top) * 10);
       for (let i = 0; i <= maxH; i++) {
-        const [mx, my] = P(-1.5, i * 0.1);
+        const [mx, my] = P(-1.55, i * 0.1);
         const len = i % 10 === 0 ? 10 : i % 5 === 0 ? 7 : 4;
         ctx.beginPath();
         ctx.moveTo(mx, my);
@@ -2775,69 +2973,111 @@
         if (i % 5 === 0 && view.k > 40) labelText(ctx, (i / 10).toFixed(1), mx - 6, my, C.muted, 'right', 12, 400);
       }
       ctx.restore();
-      if (an.mode === 'land') {
+      const guide = (y, text) => {
+        const [gx0, gy] = P(text ? -0.9 : -0.35, y);
+        const [gx1] = P(text ? 0.75 : 1.2, y);
+        ctx.save();
+        ctx.strokeStyle = C.muted;
+        ctx.setLineDash([4, 5]);
+        ctx.beginPath();
+        ctx.moveTo(gx0, gy);
+        ctx.lineTo(gx1, gy);
+        ctx.stroke();
+        ctx.restore();
+        if (text) labelText(ctx, text, gx1 + 6, gy, C.muted, 'left', 13, 600, C.fontBody);
+      };
+      if (an.mode === 'jump') {
+        guide(HIP - an.d, 'hips at the start');
+        guide(HIP, 'hips at takeoff');
+        guide(HIP + an.h, 'hips at the top');
+        dimV(ctx, view, -0.75, HIP - an.d, HIP, 'd', C.accent, 'left');
+        dimV(ctx, view, -0.75, HIP, HIP + an.h, 'h', C['f-a'], 'left');
+      } else {
         // the ledge the person steps off
-        const [lx0, ly0] = P(-1.2, an.h);
-        const [lx1, ly1] = P(-0.35, 0);
+        const [lx0, ly0] = P(-1.3, an.h);
+        const [lx1, ly1] = P(-0.4, 0);
         ctx.save();
         ctx.fillStyle = C.bench;
         ctx.strokeStyle = C['bench-edge'];
         ctx.fillRect(lx0, ly0, lx1 - lx0, ly1 - ly0);
         ctx.strokeRect(lx0, ly0, lx1 - lx0, ly1 - ly0);
         ctx.restore();
+        guide(HIP, '');
+        guide(HIP - an.d, '');
+        guide(an.h, '');
+        dimV(ctx, view, 1.45, 0, an.h, 'h', C['f-a'], 'right');
+        dimV(ctx, view, -0.15, HIP - an.d, HIP, 'd', C.accent, 'left');
+        labelText(ctx, 'Dashed lines: where the feet start, and the hip height when the feet touch and when stopped.', 12, 40, C.muted, 'left', 13, 400, C.fontBody);
       }
       for (const ts of strobeTimes(t)) {
         const g0 = BODY.state(an, ts);
-        const [gx, gy] = P(0.15, g0.y);
+        const [gx, gy] = P(0.2, g0.y);
         ctx.save();
-        ctx.globalAlpha = 0.35;
+        ctx.globalAlpha = 0.4;
         ctx.fillStyle = C.ink;
         ctx.beginPath();
         ctx.arc(gx, gy, 3, 0, 2 * Math.PI);
         ctx.fill();
         ctx.restore();
       }
-      drawPerson(ctx, view, 0.15, st.y, { yFoot: st.contact ? 0 : st.y - HIP, arms: st.contact ? 'down' : 'up', label: trimNum(an.m) + ' kg' });
-      // hip marker
-      const [hx, hy] = P(0.15, st.y);
+      const pose = BODY.poseAt(an, t);
+      drawFigure(ctx, view, pose, { label: W < 520 ? '' : trimNum(an.m) + ' kg' });
+      // hip marker: the point whose motion the numbers describe
+      const [hx, hy] = P(pose.hip.x, pose.hip.y);
       ctx.save();
       ctx.fillStyle = C.accent;
+      ctx.strokeStyle = C.scene;
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(hx, hy, 4, 0, 2 * Math.PI);
+      ctx.arc(hx, hy, 5, 0, 2 * Math.PI);
       ctx.fill();
+      ctx.stroke();
       ctx.restore();
-      // floor force arrow while in contact
+      // the floor's push while the feet are on the floor
       if (st.F > 1e-9) {
-        const [fx, fy] = P(0.15, 0);
-        const len = Math.min(140, 30 + (st.F / an.W) * 18);
-        arrow(ctx, fx + 40, fy, fx + 40, fy - len, C['f-n'], 4, 13);
-        labelText(ctx, 'F_floor', fx + 52, fy - len * 0.6, C['f-n'], 'left', 15);
+        const [fx, fy] = P(an.mode === 'land' ? 0.75 : 0.62, 0);
+        const len = Math.min(150, 30 + (st.F / an.W) * 20);
+        arrow(ctx, fx, fy, fx, fy - len, C['f-n'], 4.5, 14);
+        labelText(ctx, 'F_floor', fx + 10, fy - len * 0.55, C['f-n'], 'left', 15);
       }
       labelText(ctx, st.phase, 12, 18, C.ink, 'left', 15, 700, C.fontBody);
     },
     drawSprint(ctx, W, H, t) {
       const an = analysis;
       const st = BODY.state(an, t);
-      const view = fitView({ x0: st.y - 3.2, x1: st.y + 3.2, y0: -0.4, y1: 2.4 }, W, H);
+      const view = fitView({ x0: st.y - 3.2, x1: st.y + 3.2, y0: -0.45, y1: 2.3 }, W, H);
       const P = view.P;
       drawGrid(ctx, W, H, view);
-      drawFloor(ctx, view, st.y - 4, st.y + 4);
+      // running track
+      const [tx0, ty0] = P(st.y - 5, 0);
+      const [tx1, ty1] = P(st.y + 5, -0.3);
+      ctx.save();
+      ctx.fillStyle = C.track;
+      ctx.fillRect(tx0, ty0, tx1 - tx0, ty1 - ty0);
+      ctx.strokeStyle = C.ink;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(tx0, ty0);
+      ctx.lineTo(tx1, ty0);
+      ctx.stroke();
+      ctx.restore();
       // distance marks
       for (let x = Math.floor(st.y - 4); x <= st.y + 4; x++) {
-        if (x < 0 || x > an.d + 2) continue;
+        if (x < 0 || x > an.d + 3) continue;
         const [mx, my] = P(x, 0);
         ctx.save();
-        ctx.strokeStyle = C.muted;
+        ctx.strokeStyle = C.ink;
+        ctx.globalAlpha = 0.7;
         ctx.beginPath();
         ctx.moveTo(mx, my);
-        ctx.lineTo(mx, my - (x % 5 === 0 ? 12 : 6));
+        ctx.lineTo(mx, my + (x % 5 === 0 ? 14 : 7));
         ctx.stroke();
         ctx.restore();
-        if (x % 5 === 0 || x === an.d) labelText(ctx, x + ' m', mx, my + 16, C.muted, 'center', 12, 400);
+        if (x % 5 === 0 || x === Math.round(an.d)) labelText(ctx, x + ' m', mx, my + 24, C.ink, 'center', 12, 600);
       }
       for (const [x, txt] of [[0, 'Start'], [an.d, 'Top speed']]) {
         const [lx, ly] = P(x, 0);
-        const [, ly2] = P(x, 2.0);
+        const [, ly2] = P(x, 2.05);
         ctx.save();
         ctx.strokeStyle = C.accent;
         ctx.setLineDash([5, 5]);
@@ -2848,111 +3088,146 @@
         ctx.restore();
         labelText(ctx, txt, lx, ly2 - 10, C.accent, 'center', 13, 700, C.fontBody);
       }
-      const swing = Math.sin(st.y * 4) * Math.min(1, st.v / 3);
-      drawPerson(ctx, view, st.y, HIP, { yFoot: 0, swing, lean: 0.12 * Math.min(1, st.a / 3 + 0.2), label: trimNum(an.m) + ' kg' });
-      if (st.F > 1e-9) {
-        const [fx, fy] = P(st.y, 0);
-        arrow(ctx, fx - 10, fy - 4, fx + 55, fy - 4, C['f-f'], 4, 13);
-        labelText(ctx, 'f (ground pushes forward)', fx + 60, fy - 18, C['f-f'], 'left', 14);
+      // starting block
+      const [bx0, by0] = P(-0.42, 0);
+      const [bx1, by1] = P(-0.12, 0.16);
+      ctx.save();
+      ctx.fillStyle = C['bench-edge'];
+      ctx.beginPath();
+      ctx.moveTo(bx0, by0);
+      ctx.lineTo(bx1, by0);
+      ctx.lineTo(bx1, by1);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      for (const ts of strobeTimes(t)) {
+        const [gx, gy] = P(BODY.state(an, ts).y, HIP);
+        ctx.save();
+        ctx.globalAlpha = 0.4;
+        ctx.fillStyle = C.ink;
+        ctx.beginPath();
+        ctx.arc(gx, gy, 3, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.restore();
       }
-      labelText(ctx, st.phase === 'Speeding up' && t <= an.t ? 'Speeding up' : 'At top speed', 12, 18, C.ink, 'left', 15, 700, C.fontBody);
+      const pose = BODY.poseAt(an, t);
+      drawFigure(ctx, view, pose, { label: W < 520 ? '' : trimNum(an.m) + ' kg', labelLeft: true });
+      if (st.F > 1e-9) {
+        // friction acts at the foot on the ground
+        const foot = pose.legs[0].toe.y < pose.legs[1].toe.y ? pose.legs[0] : pose.legs[1];
+        const [fx, fy] = P(foot.ankle.x, 0);
+        arrow(ctx, fx - 20, fy + 8, fx + 60, fy + 8, C['f-f'], 4.5, 14);
+        labelText(ctx, 'f (track pushes the runner forward)', fx + 66, fy + 8, C['f-f'], 'left', 14);
+      }
+      labelText(ctx, t <= an.t && st.v < an.v - 1e-9 ? 'Speeding up' : 'At top speed', 12, 18, C.ink, 'left', 15, 700, C.fontBody);
     },
     drawTraction(ctx, W, H) {
       const an = analysis;
       const a1 = an.th1 * DEG;
       const a2 = an.th2 * DEG;
       const Py = 1.7;
-      const Px = 0.3;
+      const Px = 0.32;
       const Xf = Px + 1.7;
       const U = { x: Xf, y: Py + (Xf - Px) * Math.tan(a1) };
       const Lw = { x: Xf, y: Py - (Xf - Px) * Math.tan(a2) };
-      const view = fitView({ x0: -2.9, x1: Xf + 0.9, y0: -0.15, y1: Math.max(U.y + 0.4, 2.6) }, W, H);
+      const view = fitView({ x0: -2.85, x1: Xf + 0.95, y0: -0.15, y1: Math.max(U.y + 0.4, 2.4) }, W, H);
       const P = view.P;
       drawGrid(ctx, W, H, view);
-      drawFloor(ctx, view, -2.9, Xf + 0.9);
-      const rect = (x0, y0, x1, y1, fill) => {
+      drawFloor(ctx, view, -2.85, Xf + 0.95);
+      const box = (x0, y0, x1, y1, fill, stroke, r = 0) => {
         const [a, b] = P(x0, y1);
         const [c2, d2] = P(x1, y0);
         ctx.save();
         ctx.fillStyle = fill;
-        ctx.strokeStyle = C['bench-edge'];
+        ctx.strokeStyle = stroke || C['bench-edge'];
         ctx.lineWidth = 1.5;
-        ctx.fillRect(a, b, c2 - a, d2 - b);
-        ctx.strokeRect(a, b, c2 - a, d2 - b);
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(a, b, c2 - a, d2 - b, r * view.k);
+        else ctx.rect(a, b, c2 - a, d2 - b);
+        ctx.fill();
+        ctx.stroke();
         ctx.restore();
       };
-      // bed and frame
-      rect(-2.7, 1.35, 0.1, 1.5, C.bench);
-      rect(-2.6, 0, -2.5, 1.35, C.bench);
-      rect(-0.05, 0, 0.05, 1.35, C.bench);
-      rect(Xf + 0.05, 0, Xf + 0.15, Math.max(U.y, 1.8) + 0.25, C.bench);
-      // patient lying on the bed, leg raised to the foot pulley
+      // hospital bed: legs, frame, mattress and pillow
+      box(-2.62, 0, -2.54, 1.3, C.bench);
+      box(-0.1, 0, -0.02, 1.3, C.bench);
+      box(-2.7, 1.25, 0.05, 1.35, C.bench);
+      box(-2.68, 1.35, 0.02, 1.5, C.panel, C.muted, 0.05);
+      box(-2.62, 1.5, -2.1, 1.62, C.panel, C.muted, 0.06);
+      // traction frame with the top pulley and the rope's anchor
+      const postTop = Math.max(U.y, 1.9) + 0.25;
+      box(Xf + 0.06, 0, Xf + 0.16, postTop, C.bench);
+      // patient
+      const footAt = { x: 0.06, y: Py - 0.02 };
+      const pose = poseLying(1.5, footAt);
+      drawFigure(ctx, view, pose, {});
+      // boot around the foot, with a short bar to the pulley
+      const near = pose.legs[1];
+      const [ax, ay] = P(near.ankle.x, near.ankle.y);
+      const [tx, ty] = P(near.toe.x, near.toe.y);
       ctx.save();
-      ctx.strokeStyle = C.ink;
+      ctx.strokeStyle = C['bench-edge'];
       ctx.lineCap = 'round';
-      ctx.lineWidth = Math.max(6, view.k * 0.14);
-      const seg = (a, b) => {
-        const [x1, y1] = P(a[0], a[1]);
-        const [x2, y2] = P(b[0], b[1]);
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
-      };
-      seg([-2.3, 1.62], [-1.2, 1.62]);
-      seg([-1.2, 1.62], [-0.5, 1.68]);
-      seg([-0.5, 1.68], [0.1, 1.7]);
-      ctx.lineWidth = 2;
-      const [hx, hy] = P(-2.5, 1.68);
-      ctx.fillStyle = bodyColor(0);
+      ctx.lineWidth = 0.16 * view.k;
       ctx.beginPath();
-      ctx.arc(hx, hy, 0.13 * view.k, 0, 2 * Math.PI);
-      ctx.fill();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+      const [px, py] = P(Px, Py);
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo((ax + tx) / 2 + 0.06 * view.k, (ay + ty) / 2);
+      ctx.lineTo(px, py);
       ctx.stroke();
       ctx.restore();
-      // ropes
+      // the rope: anchor -> foot pulley -> top pulley -> down to the weight
+      const [ux, uy] = P(U.x, U.y);
+      const [lx, ly] = P(Lw.x, Lw.y);
+      const rp = 0.08 * view.k;
+      const [, wy] = P(0, Math.max(0.4, U.y - 1.05));
       ctx.save();
       ctx.strokeStyle = C.ink;
       ctx.lineWidth = 2;
-      const [px, py] = P(Px, Py);
-      const [ux, uy] = P(U.x, U.y);
-      const [lx, ly] = P(Lw.x, Lw.y);
       ctx.beginPath();
       ctx.moveTo(lx, ly);
       ctx.lineTo(px, py);
       ctx.lineTo(ux, uy);
-      const rp = 0.08 * view.k;
-      ctx.lineTo(ux + rp, uy);
-      const [, wy] = P(0, Math.max(0.35, U.y - 1.1));
+      ctx.moveTo(ux + rp, uy);
       ctx.lineTo(ux + rp, wy);
       ctx.stroke();
-      // pulleys and anchor
       for (const [x, y] of [[px, py], [ux, uy]]) {
         ctx.fillStyle = C.panel;
         ctx.beginPath();
         ctx.arc(x, y, rp, 0, 2 * Math.PI);
         ctx.fill();
         ctx.stroke();
+        ctx.fillStyle = C.ink;
+        ctx.beginPath();
+        ctx.arc(x, y, 2.5, 0, 2 * Math.PI);
+        ctx.fill();
       }
       ctx.fillStyle = C['bench-edge'];
-      ctx.fillRect(lx - 5, ly - 5, 10, 10);
-      // hanging weight
-      const wb = 0.28 * view.k;
+      ctx.fillRect(lx - 6, ly - 6, 12, 12);
+      // hanging weight with a hook
+      const wb = 0.3 * view.k;
+      ctx.beginPath();
+      ctx.arc(ux + rp, wy + 4, 4, 0, Math.PI);
+      ctx.stroke();
       ctx.fillStyle = bodyColor(1);
-      ctx.fillRect(ux + rp - wb / 2, wy, wb, wb);
-      ctx.strokeRect(ux + rp - wb / 2, wy, wb, wb);
+      ctx.fillRect(ux + rp - wb / 2, wy + 8, wb, wb);
+      ctx.strokeRect(ux + rp - wb / 2, wy + 8, wb, wb);
       ctx.restore();
-      labelText(ctx, trimNum(an.m) + ' kg', ux + rp + wb / 2 + 8, wy + wb / 2, C.ink, 'left', 14);
-      // angles
+      labelText(ctx, trimNum(an.m) + ' kg', ux + rp + wb / 2 + 8, wy + 8 + wb / 2, C.ink, 'left', 14);
+      // angles at the foot pulley
       ctx.save();
       ctx.strokeStyle = C.muted;
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
       ctx.moveTo(px, py);
-      ctx.lineTo(px + 0.75 * view.k, py);
+      ctx.lineTo(px + 0.8 * view.k, py);
       ctx.stroke();
       ctx.setLineDash([]);
-      const rr = 0.45 * view.k;
+      const rr = 0.5 * view.k;
       ctx.beginPath();
       ctx.arc(px, py, rr, -a1, 0);
       ctx.stroke();
@@ -2960,9 +3235,12 @@
       ctx.arc(px, py, rr * 0.8, 0, a2);
       ctx.stroke();
       ctx.restore();
-      // angle labels sit to the left of the pulley, clear of the vectors
-      labelText(ctx, 'θ₁ = ' + trimNum(an.th1) + '°', px - 14, py - 24, C.ink, 'right', 14);
-      labelText(ctx, 'θ₂ = ' + trimNum(an.th2) + '°', px - 14, py + 26, C.ink, 'right', 14);
+      // short angle names near the pulley; the values go in the corner
+      const la1 = a1 + 0.38;
+      const la2 = a2 + 0.42;
+      labelText(ctx, 'θ₁', px + rr * 0.78 * Math.cos(la1), py - rr * 0.78 * Math.sin(la1), C.ink, 'center', 15);
+      labelText(ctx, 'θ₂', px + rr * 0.72 * Math.cos(la2), py + rr * 0.72 * Math.sin(la2), C.ink, 'center', 15);
+      labelText(ctx, 'θ₁ = ' + trimNum(an.th1) + '° (upper rope)    θ₂ = ' + trimNum(an.th2) + '° (lower rope)', 12, 40, C.muted, 'left', 13, 600, C.fontBody);
       // force vectors on the foot pulley
       const sc = (1.05 * view.k) / Math.max(an.F, 1e-9);
       const tip = (fx, fy) => [px + fx * sc, py - fy * sc];
@@ -2970,11 +3248,14 @@
       const [t2x, t2y] = tip(an.T * Math.cos(a2), -an.T * Math.sin(a2));
       arrow(ctx, px, py, t1x, t1y, C.l1, 3, 11);
       arrow(ctx, px, py, t2x, t2y, C.l1, 3, 11);
-      labelText(ctx, 'T', t1x + 6, t1y - 10, C.l1, 'left', 15);
-      labelText(ctx, 'T', t2x + 6, t2y + 12, C.l1, 'left', 15);
+      const out = (x, y, ang, sgn) => [x + 14 * Math.cos(ang) - sgn * 10 * Math.sin(ang), y - sgn * 14 * Math.sin(ang) * sgn - 10 * Math.cos(ang) * sgn];
+      const [l1x, l1y] = out(t1x, t1y, a1, 1);
+      const [l2x, l2y] = [t2x + 14 * Math.cos(a2) + 10 * Math.sin(a2), t2y + 14 * Math.sin(a2) + 10 * Math.cos(a2)];
+      labelText(ctx, 'T', l1x, l1y, C.l1, 'center', 15);
+      labelText(ctx, 'T', l2x, l2y, C.l1, 'center', 15);
       const [rx, ry] = tip(an.Fx, an.Fy);
       arrow(ctx, px, py, rx, ry, C['f-a'], 4.5, 14);
-      labelText(ctx, 'F', rx + 8, ry + (an.Fy >= 0 ? -10 : 10), C['f-a'], 'left', 17);
+      labelText(ctx, 'F', rx + 10, ry, C['f-a'], 'left', 17);
       labelText(ctx, 'At rest: an equilibrium problem', 12, 18, C.ink, 'left', 15, 700, C.fontBody);
     },
     forceSets(an) {
@@ -3008,6 +3289,7 @@
           body: { name: 'Runner, speeding up', m: an.m, kind: 'person' },
           idx: 0,
           tilt: 0,
+          pose: poseRun(0, 1.4, 0.3),
           arrows: [
             { dir: { x: 0, y: -1 }, mag: an.W, color: C['f-w'], label: 'W' },
             { dir: { x: 0, y: 1 }, mag: an.N, color: C['f-n'], label: 'N' },
@@ -3017,8 +3299,10 @@
       }
       const contact = { dir: { x: 0, y: 1 }, mag: an.F, color: C['f-n'], label: 'F_floor' };
       const W = { dir: { x: 0, y: -1 }, mag: an.W, color: C['f-w'], label: 'W' };
-      const a = [{ body: { name: an.mode === 'jump' ? 'Pushing off' : 'Falling', m: person.m, kind: 'person' }, idx: 0, tilt: 0, arrows: an.mode === 'jump' ? [W, contact] : [W] }];
-      a.push({ body: { name: an.mode === 'jump' ? 'In the air' : 'Stopping', m: person.m, kind: 'person' }, idx: 0, tilt: 0, arrows: an.mode === 'jump' ? [W] : [W, contact] });
+      const crouched = poseUpright({ x: 0, yHip: STAND_HIP - 0.3, contact: true, armA: an.mode === 'jump' ? 1.2 : 1.1 });
+      const flying = poseUpright({ x: 0, yHip: STAND_HIP, contact: false, armA: an.mode === 'jump' ? 2.6 : 1.35, tuck: 0.06 });
+      const a = [{ body: { name: an.mode === 'jump' ? 'Pushing off' : 'Falling', m: person.m, kind: 'person' }, idx: 0, tilt: 0, pose: an.mode === 'jump' ? crouched : flying, arrows: an.mode === 'jump' ? [W, contact] : [W] }];
+      a.push({ body: { name: an.mode === 'jump' ? 'In the air' : 'Stopping', m: person.m, kind: 'person' }, idx: 0, tilt: 0, pose: an.mode === 'jump' ? flying : crouched, arrows: an.mode === 'jump' ? [W] : [W, contact] });
       return a;
     },
     fbdCaption(an) {
