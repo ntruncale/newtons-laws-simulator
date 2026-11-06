@@ -16,7 +16,7 @@ It is a static web page: plain HTML, CSS and JavaScript, with no build step and 
 On every surface you can:
 
 - set each block's mass;
-- choose whether neighboring blocks are **touching** (contact forces, Newton's third-law pairs) **tied with a string** (tension), or **apart**;
+- choose whether neighboring blocks are **touching** (contact forces, Newton's third-law pairs), **tied with a string** (tension), or **apart**;
 - on a level surface with 3 or more blocks, tie a **long string from Block 1 to the last block** that passes over the blocks between (for example: Block 2 pushes Block 3, which pulls Block 1 along by the string);
 - turn on **friction** with static (μs) and kinetic (μk) coefficients, either shared or set per block;
 - add an **applied force** of any size and direction on any block (angled forces change the normal force);
