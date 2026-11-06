@@ -1976,6 +1976,11 @@
    * Worked solution
    * ==================================================================== */
 
+  // A force vector: bold F with an arrow over it, plus an optional subscript.
+  const vecF = (subText) => '<span class="vec">F</span>' + (subText ? '<sub>' + subText + '</sub>' : '');
+  const SUMF = 'Σ' + vecF();
+  const FNET = vecF('net');
+
   function alongTerms(b, withSlip) {
     const t = [];
     if (b.kind === 'hanging') t.push({ v: b.W, d: 'weight m' + sub(b.index + 1) + 'g' });
@@ -2002,7 +2007,7 @@
         '<p>' + (Math.abs(an.a) < 1e-12 ? 'The masses are equal, so nothing accelerates.' : an.a > 0 ? 'a is positive: Mass 2 falls and Mass 1 rises.' : 'a is negative: Mass 1 falls and Mass 2 rises.') + '</p></section>';
       h += '<section><h3>4. Solve for the tension</h3><div class="eq">T = m₁(g + a) = ' + fmt(b1.m) + ' × (' + g + signed(an.a) + ') = ' + fmt(an.T) + ' N\nCheck: T = m₂(g − a) = ' + fmt(b2.m) + ' × (' + g + signed(-an.a) + ') = ' + fmt(b2.m * (an.g - an.a)) + ' N</div>' +
         '<p>The tension is between the two weights (' + fmt(b1.W) + ' N and ' + fmt(b2.W) + ' N), as it must be when one mass speeds up going up and the other speeds up going down.</p></section>';
-      h += '<section><h3>5. Net force on each mass</h3><div class="eq">F_net,1 = m₁a = ' + fmt(b1.m) + ' × ' + fmt(an.a) + ' = ' + fmt(b1.Fnet) + ' N\nF_net,2 = m₂a = ' + fmt(b2.m) + ' × ' + fmt(an.a) + ' = ' + fmt(b2.Fnet) + ' N</div></section>';
+      h += '<section><h3>5. Net force on each mass</h3><div class="eq">' + vecF('net,1') + ' = m₁a = ' + fmt(b1.m) + ' × ' + fmt(an.a) + ' = ' + fmt(b1.Fnet) + ' N\n' + vecF('net,2') + ' = m₂a = ' + fmt(b2.m) + ' × ' + fmt(an.a) + ' = ' + fmt(b2.Fnet) + ' N</div></section>';
       return h;
     }
 
@@ -2071,21 +2076,24 @@
       const termStr = terms.length ? terms.map((x, k) => (k ? signed(x.v) : fmt(x.v))).join('') : '0';
       let s = '<section><h3>' + step++ + '. Acceleration' + (an.groups.length > 1 || many ? ' of ' + name : '') + '</h3>';
       if (many) s += '<p>Treat ' + name + ' as one system. Forces between them are internal and cancel in pairs (Newton’s third law), so only outside forces matter. Total mass M = ' + fmt(gr.M) + ' kg.</p>';
-      const slipNote = gr.members.some((i) => Math.abs(an.bodies[i].slip || 0) > 1e-12) ? ' (this includes the kinetic friction from the slipping block)' : '';
-      s += '<div class="eq">Net outside force before ' + (slipNote ? 'friction with the surface' : 'friction') + ':\nD = ' + (terms.length > 1 ? termStr + ' = ' : '') + fmt(gr.D) + ' N' + slipNote + '</div>';
+      const slipNote = gr.members.some((i) => Math.abs(an.bodies[i].slip || 0) > 1e-12) ? ' (includes the kinetic friction from the slipping block)' : '';
+      const sumStr = (terms.length > 1 ? termStr + ' = ' : '') + fmt(gr.D) + ' N';
       if (fr && gr.cap + gr.kin > 0) {
+        // Friction depends on whether it moves, so first add up everything except friction with the surface.
+        s += '<div class="eq">Sum of outside forces, not counting friction with the surface:\n' + SUMF + ' = ' + sumStr + slipNote + '</div>';
         if (gr.state !== 'sliding') {
-          s += '<p>Maximum static friction is Σ μs·N = ' + fmt(gr.cap) + ' N. Since |D| = ' + fmt(Math.abs(gr.D)) + ' N is not larger, static friction holds and the system <b>stays at rest</b>: a = 0. Static friction supplies ' + fmt(Math.abs(gr.D)) + ' N' +
+          s += '<p>Maximum static friction is Σ μs·N = ' + fmt(gr.cap) + ' N. Since |' + SUMF + '| = ' + fmt(Math.abs(gr.D)) + ' N is not larger, static friction holds and the system <b>stays at rest</b>: ' + FNET + ' = 0 and a = 0. Static friction supplies ' + fmt(Math.abs(gr.D)) + ' N' +
             (Math.abs(gr.D) > 1e-9 ? ', pointing ' + (gr.D > 0 ? dw.neg : dw.pos) : '') + '.</p>';
         } else {
-          s += '<p>Maximum static friction is Σ μs·N = ' + fmt(gr.cap) + ' N. Since |D| = ' + fmt(Math.abs(gr.D)) + ' N is larger, the system slides ' + (gr.D > 0 ? dw.pos : dw.neg) +
+          s += '<p>Maximum static friction is Σ μs·N = ' + fmt(gr.cap) + ' N. Since |' + SUMF + '| = ' + fmt(Math.abs(gr.D)) + ' N is larger, the system slides ' + (gr.D > 0 ? dw.pos : dw.neg) +
             '. Kinetic friction opposes the motion with Σ μk·N = ' + fmt(gr.kin) + ' N.</p>';
-          s += '<div class="eq">a = (D' + (fTot < 0 ? ' − fₖ' : ' + fₖ') + ') / M = (' + fmt(gr.D) + signed(fTot) + ') / ' + fmt(gr.M) + ' = ' + fmt(gr.a) + ' m/s²</div>';
+          s += '<div class="eq">' + FNET + ' = ' + SUMF + (fTot < 0 ? ' − ' : ' + ') + 'fₖ = ' + fmt(gr.D) + signed(fTot) + ' = ' + fmt(gr.D + fTot) + ' N\n' +
+            'a = ' + FNET + ' / M = ' + fmt(gr.D + fTot) + ' / ' + fmt(gr.M) + ' = ' + fmt(gr.a) + ' m/s²</div>';
         }
       } else if (Math.abs(gr.D) < 1e-9) {
-        s += '<p>No net force, so a = 0. Starting from rest, it stays at rest.</p>';
+        s += '<div class="eq">' + FNET + ' = ' + sumStr + slipNote + '</div><p>No net force, so a = 0. Starting from rest, it stays at rest.</p>';
       } else {
-        s += '<div class="eq">a = D / M = ' + fmt(gr.D) + ' / ' + fmt(gr.M) + ' = ' + fmt(gr.a) + ' m/s²</div>';
+        s += '<div class="eq">Net outside force:\n' + FNET + ' = ' + sumStr + slipNote + '\na = ' + FNET + ' / M = ' + fmt(gr.D) + ' / ' + fmt(gr.M) + ' = ' + fmt(gr.a) + ' m/s²</div>';
       }
       if (gr.state === 'sliding') s += '<p>' + (gr.a > 0 ? 'Positive, so the motion is ' + dw.pos + '.' : 'Negative, so the motion is ' + dw.neg + (dw.hang && gr.members.includes(an.bodies.length - 1) ? ' (the hanging block rises)' : '') + '.') + ' Magnitude |a| = ' + fmt(Math.abs(gr.a)) + ' m/s².</p>';
       h += s + '</section>';
@@ -2152,7 +2160,7 @@
       h += s + '</section>';
     }
 
-    let net = '<div class="eq">' + an.bodies.map((b) => 'F_net on ' + b.name + ' = m a = ' + fmt(b.m) + ' × ' + fmt(b.a) + ' = ' + fmt(b.Fnet) + ' N').join('\n') + '</div>';
+    let net = '<div class="eq">' + an.bodies.map((b) => FNET + ' on ' + b.name + ' = m a = ' + fmt(b.m) + ' × ' + fmt(b.a) + ' = ' + fmt(b.Fnet) + ' N').join('\n') + '</div>';
     if (fr) net += '<div class="eq">' + an.bodies.filter((b) => b.kind === 'block').map((b) => 'Friction on ' + b.name + ': ' + (b.fType === 'static' ? 'static, ' : b.fType === 'kinetic' ? 'kinetic, μk·N = ' : '') + fmt(Math.abs(b.f)) + ' N').join('\n') + '</div>';
     h += '<section><h3>' + step++ + '. Net force on each object</h3>' + net + '</section>';
 

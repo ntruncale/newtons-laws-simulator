@@ -524,3 +524,20 @@ details.check-group summary { cursor: pointer; font-weight: 700; font-size: 0.9r
   .panel { order: 4; }
 }
 input[disabled] { color: var(--muted); cursor: not-allowed; }
+
+/* Vector notation: bold letter with an arrow above it */
+.vec { position: relative; display: inline-block; font-weight: 700; font-style: normal; }
+.vec::before {
+  content: "→";
+  position: absolute;
+  left: 50%;
+  top: -0.7em;
+  transform: translateX(-50%);
+  font-family: var(--font-body);
+  font-size: 0.95em;
+  font-weight: 400;
+  line-height: 1;
+}
+.solution .eq { line-height: 2; }
+.solution .eq sub, .solution p sub { font-size: 0.72em; }
+.solution .eq .vec::before { top: -0.55em; }
