@@ -982,7 +982,7 @@
     ctx.lineWidth = 1.6;
     ctx.stroke();
     const [px, py] = view.P(c.x, c.y);
-    const big = Math.max(10, Math.min(17, view.k * 0.12));
+    const big = Math.max(12, Math.min(20, view.k * 0.13));
     ctx.translate(px, py);
     // keep labels upright whichever way the surface slopes
     ctx.rotate(-(u.x < 0 ? Math.atan2(-u.y, -u.x) : Math.atan2(u.y, u.x)));
@@ -1067,7 +1067,7 @@
     ctx.strokeRect(sx - 4, sy1, 14, sy0 - sy1);
     ctx.fillStyle = C.muted;
     ctx.strokeStyle = C.muted;
-    ctx.font = '10px ' + C.fontMono;
+    ctx.font = '12px ' + C.fontMono;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
     for (let i = 0; i <= 30; i++) {
@@ -1201,7 +1201,7 @@
       else ctx.arc(bx, by, rr, -Math.PI, -Math.PI + g.th);
       ctx.stroke();
       ctx.fillStyle = C.ink;
-      ctx.font = '600 13px ' + C.fontMono;
+      ctx.font = '600 15px ' + C.fontMono;
       ctx.textBaseline = 'middle';
       const la = g.th * 0.35;
       ctx.textAlign = dirX > 0 ? 'left' : 'right';
@@ -1214,7 +1214,7 @@
     ctx.strokeStyle = C.muted;
     ctx.fillStyle = C.muted;
     ctx.lineWidth = 1;
-    ctx.font = '10px ' + C.fontMono;
+    ctx.font = '12px ' + C.fontMono;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const nTicks = Math.floor(g.Ls * 10 + 1e-9);
@@ -1424,7 +1424,7 @@
       arrow(ctx, x1, y1, x2, y2, C['f-a'], 3.5, 12);
       ctx.save();
       ctx.fillStyle = C['f-a'];
-      ctx.font = '700 13px ' + C.fontMono;
+      ctx.font = '700 15px ' + C.fontMono;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       const lift = an.links.some((l) => l.long) ? 0.2 : 0.06;
@@ -1513,11 +1513,11 @@
     }
     const sets = forceSets();
     const nCells = sets.length;
-    const cellW = Math.max(200, wrap.clientWidth / nCells);
+    const cellW = Math.max(230, wrap.clientWidth / nCells);
     const totalW = Math.floor(cellW * nCells);
     const maxArrows = Math.max(...sets.map((s) => s.arrows.filter((a) => a.mag > 1e-9).length));
-    const baseH = 290;
-    const fullH = baseH + (ui.showFbdValues ? maxArrows * 17 + 8 : 0);
+    const baseH = 320;
+    const fullH = baseH + (ui.showFbdValues ? maxArrows * 20 + 10 : 0);
     canvas.style.width = totalW + 'px';
     canvas.style.height = fullH + 'px';
     const { ctx } = prepCanvas(canvas, totalW, fullH);
@@ -1583,7 +1583,7 @@
           arrow(ctx, x1, y1, x2, y2, a.color, 2.6, 9, a.dashed);
           const text = a.label + (a.dashed ? ' ?' : '');
           ctx.save();
-          ctx.font = '700 12px ' + C.fontMono;
+          ctx.font = '700 14px ' + C.fontMono;
           ctx.fillStyle = a.color;
           ctx.textBaseline = 'middle';
           const tw = ctx.measureText(text).width;
@@ -1598,7 +1598,7 @@
           } else ctx.textAlign = 'center';
           if (ctx.textAlign === 'left') lx = Math.min(lx, cellW * (ci + 1) - tw - 4);
           if (ctx.textAlign === 'right') lx = Math.max(lx, cellW * ci + tw + 4);
-          if (Math.abs(dx) > 0.5 && list.length > 1) ly += (k - (list.length - 1) / 2) * 6;
+          if (Math.abs(dx) > 0.5 && list.length > 1) ly += (k - (list.length - 1) / 2) * 17;
           ctx.fillText(text, lx, ly);
           ctx.restore();
         });
@@ -1610,17 +1610,17 @@
       ctx.fill();
 
       ctx.fillStyle = C.ink;
-      ctx.font = '700 13px ' + C.fontBody;
+      ctx.font = '700 15px ' + C.fontBody;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'alphabetic';
       ctx.fillText(s.body.name.replace(/ \((hanging|on top)\)/, '') + ' · ' + massText(s.idx, s.body.m) + ' kg', cx, baseH - 22);
       if (ui.showFbdValues) {
-        ctx.font = '600 12px ' + C.fontMono;
+        ctx.font = '600 14px ' + C.fontMono;
         s.arrows
           .filter((a) => a.mag > 1e-9)
           .forEach((a, k) => {
             ctx.fillStyle = a.color;
-            ctx.fillText(a.label + ' = ' + (a.dashed ? '?' : fmt(a.mag) + ' N') + (a.note ? ' (' + a.note + ')' : ''), cx, baseH + k * 17);
+            ctx.fillText(a.label + ' = ' + (a.dashed ? '?' : fmt(a.mag) + ' N') + (a.note ? ' (' + a.note + ')' : ''), cx, baseH + k * 20);
           });
       }
     });
@@ -1733,14 +1733,14 @@
     const padY = (ymax - ymin) * 0.08;
     ymax += padY;
     if (ymin < 0) ymin -= padY;
-    const L = 62;
+    const L = 72;
     const R = 16;
     const T = 16;
-    const B = 40;
+    const B = 46;
     const X = (t) => L + ((W - L - R) * t) / tEnd;
     const Y = (y) => T + ((H - T - B) * (ymax - y)) / (ymax - ymin);
 
-    ctx.font = '11px ' + C.fontMono;
+    ctx.font = '13px ' + C.fontMono;
     ctx.fillStyle = C.muted;
     ctx.strokeStyle = C.grid;
     ctx.lineWidth = 1;
@@ -1774,7 +1774,7 @@
     ctx.fillStyle = C.ink;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
-    ctx.font = '600 12px ' + C.fontBody;
+    ctx.font = '600 14px ' + C.fontBody;
     ctx.fillText('time t (s)', L + (W - L - R) / 2, H - 4);
     ctx.save();
     ctx.translate(14, T + (H - T - B) / 2);
@@ -1791,7 +1791,7 @@
 
     if (anim.t <= 0) {
       ctx.fillStyle = C.muted;
-      ctx.font = '13px ' + C.fontBody;
+      ctx.font = '15px ' + C.fontBody;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText('Press Play to draw the graph', L + (W - L - R) / 2, T + (H - T - B) / 2);
@@ -1809,7 +1809,7 @@
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.fillStyle = C.muted;
-      ctx.font = '11px ' + C.fontBody;
+      ctx.font = '13px ' + C.fontBody;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'top';
       ctx.fillText('leaves the table', X(tl) + 4, T + 2);
@@ -2394,6 +2394,25 @@
     });
     controls.addEventListener('click', onControlClick);
 
+    const setLook = (look) => {
+      if (look === 'light') document.documentElement.setAttribute('data-look', 'light');
+      else document.documentElement.removeAttribute('data-look');
+      $('btn-look').textContent = look === 'light' ? 'Black background' : 'White background';
+      try {
+        localStorage.setItem('look', look);
+      } catch (err) {
+        /* storage may be blocked; the switch still works for this visit */
+      }
+    };
+    let look = 'dark';
+    try {
+      look = localStorage.getItem('look') === 'light' ? 'light' : 'dark';
+    } catch (err) {
+      /* ignore */
+    }
+    setLook(look);
+    $('btn-look').addEventListener('click', () => setLook(document.documentElement.getAttribute('data-look') === 'light' ? 'dark' : 'light'));
+
     $('btn-play').addEventListener('click', play);
     $('btn-reset').addEventListener('click', reset);
     $('sel-speed').addEventListener('change', (e) => (ui.speed = parseFloat(e.target.value)));
@@ -2469,7 +2488,7 @@
       drawAll();
     };
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', recolor);
-    new MutationObserver(recolor).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] });
+    new MutationObserver(recolor).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-look', 'class'] });
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(recolor);
 
     renderControls();
