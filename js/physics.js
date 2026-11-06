@@ -43,7 +43,8 @@
    *   g,
    *   friction: bool,
    *   blocks: [{ m, mus, muk }],
-   *   links: ['contact' | 'string'],  // length blocks.length - 1
+   *   links: ['contact' | 'string' | 'none'],  // between neighbors; length blocks.length - 1
+   *   longString: bool,               // a string from the first block to the last, over the ones between
    *   hanging: null | { m },          // hung over a pulley at the + end
    *   applied: null | { F, angle, block } // angle: degrees from +s, + tilts away from the surface
    * }
@@ -78,7 +79,13 @@
         muk: p.friction ? b.muk : 0,
       };
     });
-    const links = p.links.map((type, j) => ({ type, hanging: false, left: j, right: j + 1 }));
+    const links = [];
+    p.links.forEach((type, j) => {
+      if (type === 'string' || type === 'contact') links.push({ type, hanging: false, long: false, left: j, right: j + 1 });
+    });
+    if (p.longString && bodies.length >= 3) {
+      links.push({ type: 'string', hanging: false, long: true, left: 0, right: bodies.length - 1 });
+    }
     if (p.hanging) {
       const i = bodies.length;
       const W = p.hanging.m * g;
@@ -98,9 +105,9 @@
         mus: 0,
         muk: 0,
       });
-      links.push({ type: 'string', hanging: true, left: i - 1, right: i });
+      links.push({ type: 'string', hanging: true, long: false, left: i - 1, right: i });
     }
-    return { bodies, links, theta: p.theta || 0, g, friction: !!p.friction };
+    return { bodies, links, neighbors: p.links.slice(), theta: p.theta || 0, g, friction: !!p.friction };
   }
 
   // Sign of a link force on the body to its left / right.
@@ -118,34 +125,49 @@
     return c;
   }
 
+  // Bodies reachable from `start` through engaged links, without crossing link `cut`.
+  function reach(links, engaged, start, cut) {
+    const seen = new Set([start]);
+    const stack = [start];
+    while (stack.length) {
+      const i = stack.pop();
+      links.forEach((l, j) => {
+        if (j === cut || !engaged(j)) return;
+        const other = l.left === i ? l.right : l.right === i ? l.left : -1;
+        if (other >= 0 && !seen.has(other)) {
+          seen.add(other);
+          stack.push(other);
+        }
+      });
+    }
+    return [...seen].sort((x, y) => x - y);
+  }
+
   // Solve one guess of which links are "engaged" (taut string / touching blocks).
   function tryPattern(model, mask) {
     const { bodies, links } = model;
     const n = bodies.length;
-    const ranges = [];
-    let start = 0;
-    for (let j = 0; j < links.length; j++) {
-      if (!((mask >> j) & 1)) {
-        ranges.push([start, j]);
-        start = j + 1;
-      }
-    }
-    ranges.push([start, n - 1]);
+    const engaged = (j) => !!((mask >> j) & 1);
 
     const a = new Array(n).fill(0);
     const f = new Array(n).fill(0);
     const fType = new Array(n).fill('none');
     const F = new Array(links.length).fill(0);
+    const sides = new Array(links.length).fill(null);
     const groups = [];
     let scale = 1;
     for (const b of bodies) scale = Math.max(scale, Math.abs(b.ext), b.W);
 
-    for (const [s, e] of ranges) {
+    const done = new Array(n).fill(false);
+    for (let i0 = 0; i0 < n; i0++) {
+      if (done[i0]) continue;
+      const members = reach(links, engaged, i0, -1);
+      members.forEach((i) => (done[i] = true));
       let M = 0;
       let D = 0;
       let cap = 0;
       let kin = 0;
-      for (let i = s; i <= e; i++) {
+      for (const i of members) {
         const b = bodies[i];
         M += b.m;
         D += b.ext;
@@ -160,14 +182,14 @@
         // block's maximum (one reasonable choice; the true split is not unique).
         ag = 0;
         state = Math.abs(D) <= tol ? 'balanced' : 'static';
-        for (let i = s; i <= e; i++) {
+        for (const i of members) {
           const b = bodies[i];
           f[i] = cap > 0 ? (-D * b.mus * b.N) / cap : 0;
           if (b.mus > 0 && b.N > 0) fType[i] = 'static';
         }
       } else {
         const dir = Math.sign(D);
-        for (let i = s; i <= e; i++) {
+        for (const i of members) {
           const b = bodies[i];
           f[i] = -dir * b.muk * b.N;
           if (b.muk > 0 && b.N > 0) fType[i] = 'kinetic';
@@ -175,38 +197,64 @@
         ag = (D - dir * kin) / M;
         state = 'sliding';
       }
-      for (let i = s; i <= e; i++) a[i] = ag;
+      for (const i of members) a[i] = ag;
+      groups.push({ members, start: members[0], end: members[members.length - 1], M, D, cap, kin, a: ag, state });
+    }
 
-      // Internal link forces: Newton's 2nd law on everything left of the link.
+    // Internal link forces: cut the link and apply Newton's 2nd law to the
+    // part on its left body's side.
+    links.forEach((l, j) => {
+      if (!engaged(j)) return;
+      const left = reach(links, engaged, l.left, j);
+      const right = reach(links, engaged, l.right, j);
+      sides[j] = { left, right };
       let mSub = 0;
       let extSub = 0;
-      for (let i = s; i < e; i++) {
+      for (const i of left) {
         mSub += bodies[i].m;
         extSub += bodies[i].ext + f[i];
-        F[i] = (mSub * ag - extSub) / linkSigns(links[i].type).left;
       }
-      groups.push({ start: s, end: e, M, D, cap, kin, a: ag, state });
-    }
+      F[j] = (mSub * a[l.left] - extSub) / linkSigns(l.type).left;
+    });
 
     let valid = true;
     const tolF = 1e-7 * scale;
-    for (let j = 0; j < links.length; j++) {
-      const engaged = (mask >> j) & 1;
-      if (engaged) {
+    links.forEach((l, j) => {
+      if (engaged(j)) {
         if (F[j] < -tolF) valid = false;
       } else {
         // A slack string means the bodies are moving closer together;
         // a broken contact means they are moving apart.
-        const rel = links[j].type === 'string' ? a[j] - a[j + 1] : a[j + 1] - a[j];
+        const rel = l.type === 'string' ? a[l.left] - a[l.right] : a[l.right] - a[l.left];
         if (rel < -1e-9) valid = false;
       }
-    }
-    return { valid, mask, a, f, fType, F, groups };
+    });
+    return { valid, mask, a, f, fType, F, sides, groups };
   }
 
   function solveChain(p) {
     const model = buildChain(p);
     const { bodies, links } = model;
+
+    // The connections must not form a loop (that would make the forces indeterminate).
+    const parent = bodies.map((_, i) => i);
+    const find = (x) => (parent[x] === x ? x : (parent[x] = find(parent[x])));
+    for (const l of links) {
+      const ra = find(l.left);
+      const rb = find(l.right);
+      if (ra === rb) {
+        return {
+          kind: 'chain',
+          ok: false,
+          error:
+            'These connections form a closed loop, so the forces cannot be worked out. With a string from Block 1 to Block ' +
+            bodies.filter((b) => b.kind === 'block').length +
+            ', set at least one pair of neighbors to Apart.',
+          ...model,
+        };
+      }
+      parent[ra] = rb;
+    }
 
     for (const b of bodies) {
       if (b.kind === 'block' && b.N < -1e-9) {
@@ -247,21 +295,18 @@
     links.forEach((l, j) => {
       l.engaged = !!((sol.mask >> j) & 1);
       l.F = l.engaged ? Math.max(0, sol.F[j]) : 0;
+      l.sides = sol.sides[j];
       l.indeterminate = false;
-    });
-
-    // In a group held at rest by static friction, a link with friction on both
-    // sides carries a force that Newton's laws alone cannot pin down.
-    for (const gr of sol.groups) {
-      if (gr.state !== 'static') continue;
-      for (let j = gr.start; j < gr.end; j++) {
-        let capL = 0;
-        let capR = 0;
-        for (let i = gr.start; i <= j; i++) capL += bodies[i].mus * bodies[i].N;
-        for (let i = j + 1; i <= gr.end; i++) capR += bodies[i].mus * bodies[i].N;
-        if (capL > 0 && capR > 0) links[j].indeterminate = true;
+      // Held at rest by static friction on both sides: Newton's laws alone
+      // cannot pin down how the load is shared, so this force is not unique.
+      if (l.engaged && l.sides) {
+        const gr = sol.groups.find((g) => g.members.includes(l.left));
+        if (gr.state === 'static') {
+          const capOf = (list) => list.reduce((s2, i) => s2 + bodies[i].mus * bodies[i].N, 0);
+          if (capOf(l.sides.left) > 0 && capOf(l.sides.right) > 0) l.indeterminate = true;
+        }
       }
-    }
+    });
 
     return {
       kind: 'chain',

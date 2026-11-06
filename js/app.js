@@ -34,6 +34,7 @@
         muk: 0.3,
         hanging: { on: false, m: 2 },
         applied: { on: false, F: 20, angle: 0, block: 0 },
+        longString: false,
       },
       o
     );
@@ -99,6 +100,13 @@
     if (s === e) return bodies[s].name;
     return 'Blocks ' + (s + 1) + '–' + (e + 1);
   }
+  // "Block 2", "Blocks 1–3" or "Blocks 1 and 3"
+  function nameOf(members, bodies) {
+    const m = members.slice().sort((x, y) => x - y);
+    if (m.length === 1) return bodies[m[0]].name;
+    if (m[m.length - 1] - m[0] === m.length - 1) return blockSpan(m[0], m[m.length - 1], bodies);
+    return 'Blocks ' + m.slice(0, -1).map((i) => i + 1).join(', ') + ' and ' + (m[m.length - 1] + 1);
+  }
 
   function dirWords() {
     const sc = state.scenario;
@@ -126,6 +134,7 @@
       friction: c.friction,
       blocks,
       links: c.links.slice(),
+      longString: sc === 'horizontal' && !!c.longString && blocks.length >= 3,
       hanging: hang ? { m: c.hanging.m } : null,
       applied: c.applied.on
         ? { F: c.applied.F, angle: c.applied.angle, block: Math.min(c.applied.block, blocks.length - 1) }
@@ -199,7 +208,7 @@
       h += '<div class="group"><h2>' + (sc === 'modified' ? 'Blocks on the table' : 'Blocks') + '</h2>';
       h += '<p class="note">' +
         (sc === 'incline' ? 'Block 1 is lowest on the slope.' : 'Block 1 is on the left.') +
-        ' Choose whether neighbors touch or are tied with a string.</p>';
+        ' Choose whether neighbors touch, are tied with a string, or sit apart.</p>';
       const perMu = c.friction && !c.sameMu;
       c.blocks.forEach((b, i) => {
         if (i > 0) {
@@ -207,6 +216,7 @@
           h += '<div class="link-row"><span class="rl">' + (i) + '–' + (i + 1) + '</span><div class="seg" role="group" aria-label="Connection between Block ' + i + ' and Block ' + (i + 1) + '">' +
             '<button type="button" data-action="link" data-index="' + (i - 1) + '" data-type="contact" class="' + (t === 'contact' ? 'on' : '') + '" aria-pressed="' + (t === 'contact') + '">Touching</button>' +
             '<button type="button" data-action="link" data-index="' + (i - 1) + '" data-type="string" class="' + (t === 'string' ? 'on' : '') + '" aria-pressed="' + (t === 'string') + '">String</button>' +
+            '<button type="button" data-action="link" data-index="' + (i - 1) + '" data-type="none" class="' + (t === 'none' ? 'on' : '') + '" aria-pressed="' + (t === 'none') + '">Apart</button>' +
             '</div></div>';
         }
         h += '<div class="blk"><span class="tag" style="background:var(--b' + (i + 1) + ')">' + (i + 1) + '</span><div class="vals">' +
@@ -219,6 +229,13 @@
       });
       if (c.blocks.length < maxB) {
         h += '<div class="btn-row"><button type="button" class="btn btn-small" data-action="add">+ Add a block</button></div>';
+      }
+      if (sc === 'horizontal' && c.blocks.length >= 3) {
+        const last = c.blocks.length;
+        h += checkField('Tie a string from Block 1 to Block ' + last + ', passing over the blocks between', 'longString', c.longString);
+        if (c.longString && c.links.every((t) => t !== 'none')) {
+          h += '<p class="warn">With this string, set at least one pair of neighbors to Apart. Otherwise the connections form a closed loop.</p>';
+        }
       }
       h += '</div>';
 
@@ -300,6 +317,7 @@
         c.sameMu = !el.checked;
         if (!c.sameMu) c.blocks.forEach((b) => { b.mus = c.mus; b.muk = c.muk; });
       } else setPath(c, path, el.checked);
+      if (path === 'longString' && el.checked && c.links.every((t) => t !== 'none')) c.links[0] = 'none';
       renderControls();
       changed();
       return;
@@ -429,7 +447,7 @@
             }))
           : d.blocks;
         const links = blocks.slice(1).map((_, j) =>
-          Array.isArray(c.links) && (c.links[j] === 'string' || c.links[j] === 'contact') ? c.links[j] : 'contact'
+          Array.isArray(c.links) && ['string', 'contact', 'none'].includes(c.links[j]) ? c.links[j] : 'contact'
         );
         const ap = c.applied || {};
         const hg = c.hanging || {};
@@ -438,6 +456,7 @@
           blocks,
           links,
           friction: !!c.friction,
+          longString: !!c.longString,
           sameMu: c.sameMu !== false,
           mus: num(c.mus, 0.4, 0, 2),
           muk: num(c.muk, 0.3, 0, 2),
@@ -551,7 +570,8 @@
     const h = 0.3;
     const hw = 0.3;
     const strLen = 0.4;
-    const gaps = an.links.filter((l) => !l.hanging).map((l) => (l.type === 'string' ? strLen : 0));
+    const apart = 0.6;
+    const gaps = an.neighbors.map((t) => (t === 'string' ? strLen : t === 'none' ? apart : 0));
     const chain = nb * w + gaps.reduce((a, b) => a + b, 0);
     const Ls = chain + (an.theta > 0 ? 2.0 : 2.6);
     const H = hangBody ? (an.theta > 0 ? 1.0 : 1.4) : an.theta > 0 ? 0.25 : 0.5;
@@ -584,7 +604,7 @@
       geom.d0 = dir > 0 ? geom.dMin + 0.04 : dir < 0 ? geom.dMax - 0.02 : (geom.dMin + geom.dMax) / 2;
     }
     const right = Math.max(E.x, hangBody ? geom.T2.x + hw / 2 : 0) + 0.25;
-    const top = Math.max(E.y + h + 0.25, hangBody ? geom.C.y + 0.3 : 0, 0.9);
+    const top = Math.max(E.y + h + 0.4, hangBody ? geom.C.y + 0.3 : 0, 0.9);
     geom.bbox = { x0: -0.75, x1: right + 0.35, y0: -0.12, y1: top + 0.25 };
 
     const pos = (t) => {
@@ -599,7 +619,10 @@
       if (p.xs[0] - w / 2 < -1e-9) return 'Block 1 reached ' + start;
       if (p.xs[nb - 1] + w / 2 > Ls + 1e-9) return 'Block ' + nb + ' reached ' + end;
       for (let i = 0; i < nb - 1; i++) {
-        if (p.xs[i + 1] - p.xs[i] < w - 1e-9) return 'Block ' + (i + 1) + ' ran into Block ' + (i + 2) + ' after the string between them went slack';
+        if (p.xs[i + 1] - p.xs[i] < w - 1e-9)
+          return an.neighbors[i] === 'string'
+            ? 'Block ' + (i + 1) + ' and Block ' + (i + 2) + ' collided after the string between them went slack'
+            : 'Block ' + (i + 1) + ' and Block ' + (i + 2) + ' collided';
       }
       if (hangBody) {
         if (p.d < geom.dMin) return 'Block ' + (nb + 1) + ' reached the pulley';
@@ -1012,7 +1035,7 @@
       ctx.stroke();
       const last = blocks.length - 1;
       const front = { x: g.S0.x + u.x * (pos.xs[last] + w / 2) + n.x * h / 2, y: g.S0.y + u.y * (pos.xs[last] + w / 2) + n.y * h / 2 };
-      const slack = !an.links[an.links.length - 1].engaged;
+      const slack = !an.links.find((l) => l.hanging).engaged;
       ctx.strokeStyle = C.ink;
       ctx.lineWidth = 1.6;
       if (slack) ctx.setLineDash([4, 4]);
@@ -1044,10 +1067,31 @@
     ctx.save();
     ctx.strokeStyle = C.ink;
     ctx.lineWidth = 1.6;
-    an.links.forEach((l, j) => {
+    an.links.forEach((l) => {
       if (l.hanging || l.type !== 'string') return;
-      const a = pos.xs[j] + w / 2;
-      const b = pos.xs[j + 1] - w / 2;
+      if (l.long) {
+        // runs over the top of the blocks between, on two short posts
+        const post = 0.1;
+        const y = h + post;
+        const A0 = pos.xs[l.left];
+        const B0 = pos.xs[l.right];
+        const pts = [
+          [A0, h],
+          [A0, y],
+          [B0, y],
+          [B0, h],
+        ].map(([sAlong, up]) => P(g.S0.x + u.x * sAlong + n.x * up, g.S0.y + u.y * sAlong + n.y * up));
+        ctx.save();
+        if (!l.engaged) ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        pts.slice(1).forEach((q) => ctx.lineTo(q[0], q[1]));
+        ctx.stroke();
+        ctx.restore();
+        return;
+      }
+      const a = pos.xs[l.left] + w / 2;
+      const b = pos.xs[l.right] - w / 2;
       const A = { x: g.S0.x + u.x * a + n.x * h / 2, y: g.S0.y + u.y * a + n.y * h / 2 };
       const B = { x: g.S0.x + u.x * b + n.x * h / 2, y: g.S0.y + u.y * b + n.y * h / 2 };
       const [ax, ay] = P(A.x, A.y);
@@ -1090,7 +1134,15 @@
         Math.abs(dl.a) > 1e-9 ? w / 2 / Math.abs(dl.a) : Infinity,
         Math.abs(dl.b) > 1e-9 ? h / 2 / Math.abs(dl.b) : Infinity
       );
-      const len = 0.55;
+      let len = 0.55;
+      // keep a push arrow out of the neighbor behind it
+      if (!(dl.b > 1e-6) && Math.abs(dl.a) > 0.5) {
+        const back = dl.a > 0 ? i - 1 : i + 1;
+        if (back >= 0 && back < g.nb) {
+          const room = Math.abs(pos.xs[i] - pos.xs[back]) - w - 0.04;
+          len = Math.max(0.12, Math.min(len, room / Math.abs(dl.a)));
+        }
+      }
       let tail;
       let tip;
       if (dl.b > 1e-6) {
@@ -1109,7 +1161,9 @@
       ctx.font = '700 13px ' + C.fontMono;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      const lab = dl.b > 1e-6 ? [x2 + (x2 - x1) * 0.25, y2 + (y2 - y1) * 0.25 - 12] : [x1, y1 - 14];
+      const lift = an.links.some((l) => l.long) ? 0.2 : 0.06;
+      const [, topY] = P(c.x + n.x * (h / 2 + lift), c.y + n.y * (h / 2 + lift));
+      const lab = dl.b > 1e-6 ? [x2 + (x2 - x1) * 0.25, y2 + (y2 - y1) * 0.25 - 12] : [(x1 + x2) / 2, Math.min(y1, topY) - 6];
       ctx.fillText('Fₐ = ' + trimNum(ap.F) + ' N', lab[0], lab[1]);
       ctx.restore();
     }
@@ -1323,7 +1377,7 @@
             items.push(sw + '<b>' + nm.onRight + '</b> (' + A.name + ' pushes ' + B.name + ' ' + dw.pos + ') and <b>' + nm.onLeft + '</b> (' + B.name + ' pushes ' + A.name + ' ' + dw.neg +
               ') are a <b>Newton’s third-law pair</b>: equal in size' + val(l.F) + ', opposite in direction, and acting on different objects.');
         } else {
-          const where = l.hanging ? 'over the pulley' : '';
+          const where = l.hanging ? 'over the pulley' : l.long ? '(over the blocks between)' : '';
           if (!l.engaged) items.push(sw + 'String ' + nm.name + ' is slack, so its tension is zero.');
           else
             items.push(sw + 'String <b>' + nm.name + '</b> ' + where + ' pulls ' + A.name + ' and ' + B.name + ' toward each other with the same tension' + val(l.F) +
@@ -1473,7 +1527,7 @@
     if (sameA) q.push({ key: 'a', group: 'main', label: 'Acceleration of the system', unit: 'm/s²', value: Math.abs(gr[0].a) });
     else
       gr.forEach((g) =>
-        q.push({ key: 'a' + g.start + '-' + g.end, group: 'main', label: 'Acceleration of ' + blockSpan(g.start, g.end, an.bodies), unit: 'm/s²', value: Math.abs(g.a) })
+        q.push({ key: 'a' + g.members.join('-'), group: 'main', label: 'Acceleration of ' + nameOf(g.members, an.bodies), unit: 'm/s²', value: Math.abs(g.a) })
       );
     an.links.forEach((l, j) => {
       const nm = labels.links[j];
@@ -1482,7 +1536,11 @@
       const row = { key: 'link' + j + l.type, group: 'main', unit: 'N', value: l.F };
       if (l.type === 'string') {
         row.label = 'Tension ' + nm.name;
-        row.sub = l.hanging ? 'string from Block ' + A + ' over the pulley to Block ' + B : 'string between Block ' + A + ' and Block ' + B;
+        row.sub = l.hanging
+          ? 'string from Block ' + A + ' over the pulley to Block ' + B
+          : l.long
+            ? 'string from Block ' + A + ' to Block ' + B + ', over the blocks between'
+            : 'string between Block ' + A + ' and Block ' + B;
       } else {
         row.label = 'Contact force between Block ' + A + ' and Block ' + B;
         row.sub = '|' + nm.onRight + '| = |' + nm.onLeft + '|';
@@ -1617,19 +1675,22 @@
     const broken = an.links.map((l, j) => ({ l, j })).filter((x) => !x.l.engaged);
     if (an.groups.length > 1) {
       h += '<section><h3>' + step++ + '. Which strings and contacts hold?</h3><p>' +
-        broken.map(({ l, j }) => (l.type === 'string' ? 'String ' + labels.links[j].name + ' goes slack (the objects it joins move toward each other).' : an.bodies[l.left].name + ' and ' + an.bodies[l.right].name + ' move apart, so they stop touching.')).join(' ') +
+        (broken.length
+          ? broken.map(({ l, j }) => (l.type === 'string' ? 'String ' + labels.links[j].name + ' goes slack (the objects it joins move toward each other).' : an.bodies[l.left].name + ' and ' + an.bodies[l.right].name + ' move apart, so they stop touching.')).join(' ')
+          : 'Some blocks are not connected to each other.') +
         ' Each connected part moves on its own, so solve each part separately.</p></section>';
     }
 
     an.groups.forEach((gr) => {
-      const name = blockSpan(gr.start, gr.end, an.bodies);
+      const name = nameOf(gr.members, an.bodies);
       const terms = [];
-      for (let i = gr.start; i <= gr.end; i++) alongTerms(an.bodies[i]).forEach((x) => terms.push(x));
+      gr.members.forEach((i) => alongTerms(an.bodies[i]).forEach((x) => terms.push(x)));
       let fTot = 0;
-      for (let i = gr.start; i <= gr.end; i++) fTot += an.bodies[i].f;
+      gr.members.forEach((i) => (fTot += an.bodies[i].f));
+      const many = gr.members.length > 1;
       const termStr = terms.length ? terms.map((x, k) => (k ? signed(x.v) : fmt(x.v))).join('') : '0';
-      let s = '<section><h3>' + step++ + '. Acceleration' + (an.groups.length > 1 || gr.end > gr.start ? ' of ' + name : '') + '</h3>';
-      if (gr.end > gr.start) s += '<p>Treat ' + name + ' as one system. Forces between them are internal and cancel in pairs (Newton’s third law), so only outside forces matter. Total mass M = ' + fmt(gr.M) + ' kg.</p>';
+      let s = '<section><h3>' + step++ + '. Acceleration' + (an.groups.length > 1 || many ? ' of ' + name : '') + '</h3>';
+      if (many) s += '<p>Treat ' + name + ' as one system. Forces between them are internal and cancel in pairs (Newton’s third law), so only outside forces matter. Total mass M = ' + fmt(gr.M) + ' kg.</p>';
       s += '<div class="eq">Net outside force before friction:\nD = ' + (terms.length > 1 ? termStr + ' = ' : '') + fmt(gr.D) + ' N</div>';
       if (fr && gr.cap + gr.kin > 0) {
         if (gr.state !== 'sliding') {
@@ -1645,7 +1706,7 @@
       } else {
         s += '<div class="eq">a = D / M = ' + fmt(gr.D) + ' / ' + fmt(gr.M) + ' = ' + fmt(gr.a) + ' m/s²</div>';
       }
-      if (gr.state === 'sliding') s += '<p>' + (gr.a > 0 ? 'Positive, so the motion is ' + dw.pos + '.' : 'Negative, so the motion is ' + dw.neg + (dw.hang && gr.end === an.bodies.length - 1 ? ' (the hanging block rises)' : '') + '.') + ' Magnitude |a| = ' + fmt(Math.abs(gr.a)) + ' m/s².</p>';
+      if (gr.state === 'sliding') s += '<p>' + (gr.a > 0 ? 'Positive, so the motion is ' + dw.pos + '.' : 'Negative, so the motion is ' + dw.neg + (dw.hang && gr.members.includes(an.bodies.length - 1) ? ' (the hanging block rises)' : '') + '.') + ' Magnitude |a| = ' + fmt(Math.abs(gr.a)) + ' m/s².</p>';
       h += s + '</section>';
     });
 
@@ -1654,17 +1715,17 @@
       let s = '<section><h3>' + step++ + '. Tensions and contact forces</h3><p>Isolate the objects on one side of each string or contact and apply ΣF = ma to just that part.</p>';
       engagedLinks.forEach(({ l, j }) => {
         const nm = labels.links[j];
-        const gr = an.groups.find((g) => g.start <= l.left && g.end >= l.right);
+        const gr = an.groups.find((g) => g.members.includes(l.left));
         if (l.indeterminate) {
           s += '<p><b>' + (l.type === 'string' ? 'Tension ' + nm.name : 'Contact ' + nm.name) + ':</b> not uniquely determined. The blocks are held at rest and static friction on each side can take different shares of the load, so Newton’s laws alone do not fix this force.</p>';
           return;
         }
         // Isolate the simpler side: the hanging block if there is one, otherwise
         // the side with fewer forces on it (ties go to the right-hand side).
-        const sideParts = (a, b) => {
+        const sideParts = (list) => {
           const out = [];
           let m = 0;
-          for (let i = a; i <= b; i++) {
+          for (const i of list) {
             const bd = an.bodies[i];
             m += bd.m;
             alongTerms(bd).forEach((x) => out.push(x.v));
@@ -1672,22 +1733,23 @@
           }
           return { parts: out, M: m };
         };
-        const L = sideParts(gr.start, l.left);
-        const R = sideParts(l.right, gr.end);
-        const nL = l.left - gr.start + 1;
-        const nR = gr.end - l.right + 1;
+        const L = sideParts(l.sides.left);
+        const R = sideParts(l.sides.right);
+        const nL = l.sides.left.length;
+        const nR = l.sides.right.length;
         const right =
           an.bodies[l.right].kind === 'hanging' ||
           R.parts.length < L.parts.length ||
           (R.parts.length === L.parts.length && nR <= nL);
-        const [s0, s1] = right ? [l.right, gr.end] : [gr.start, l.left];
         const sg = P.linkSigns(l.type)[right ? 'right' : 'left'];
         const lab = right ? nm.onRight : nm.onLeft;
         const { parts, M } = right ? R : L;
-        const who = blockSpan(s0, s1, an.bodies).replace(' (hanging)', '');
+        const who = nameOf(right ? l.sides.right : l.sides.left, an.bodies).replace(' (hanging)', '');
         const lhs = (sg > 0 ? '' : '−') + lab + parts.map((v) => signed(v)).join('');
         // e.g. "T − 19.60 = (2.00)(3.27)" then "T = 13.07 N"
-        s += '<p><b>' + (l.type === 'string' ? 'Tension ' + nm.name : 'Contact ' + nm.name + ' and ' + nm.onLeft) + '</b>: isolate ' + who + '.</p>' +
+        const isolated = right ? l.sides.right : l.sides.left;
+        const note = isolated.length > 1 ? ' Treat them as one part: any string or contact between them is internal and cancels.' : '';
+        s += '<p><b>' + (l.type === 'string' ? 'Tension ' + nm.name : 'Contact ' + nm.name + ' and ' + nm.onLeft) + '</b>: isolate ' + who + '.' + note + '</p>' +
           '<div class="eq">' + lhs + ' = (' + fmt(M) + ')(' + fmt(gr.a) + ')\n' + lab + ' = ' + fmt(l.F) + ' N</div>';
       });
       broken.forEach(({ l, j }) => {

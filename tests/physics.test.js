@@ -133,3 +133,43 @@ test('static chain marks shared-friction tension as indeterminate', () => {
   assert.ok(r.atRest);
   assert.ok(r.links[0].indeterminate);
 });
+
+test('long string from Block 1 to Block 3, Block 2 pushes Block 3', () => {
+  const r = P.solveChain({
+    theta: 0, g, friction: false, blocks: [block(1), block(2), block(3)], links: ['none', 'contact'], longString: true,
+    applied: { F: 12, angle: 0, block: 1 },
+  });
+  close(r.bodies[0].a, 2);
+  close(r.bodies[1].a, 2);
+  const contact = r.links.find((l) => l.type === 'contact');
+  const str = r.links.find((l) => l.long);
+  close(contact.F, 8); // pushes Blocks 3 and 1 together: (3 + 1)(2)
+  close(str.F, 2); // pulls Block 1 only: (1)(2)
+});
+
+test('long string with friction', () => {
+  const r = P.solveChain({
+    theta: 0, g, friction: true, blocks: [block(1, 0.2, 0.1), block(2, 0.2, 0.1), block(3, 0.2, 0.1)],
+    links: ['none', 'contact'], longString: true, applied: { F: 30, angle: 0, block: 1 },
+  });
+  const a = (30 - 0.1 * 6 * g) / 6;
+  close(r.bodies[2].a, a);
+  close(r.links.find((l) => l.long).F, 1 * a + 0.1 * 1 * g);
+});
+
+test('pushing Block 2 away from Block 3 leaves Blocks 1 and 3 at rest', () => {
+  const r = P.solveChain({
+    theta: 0, g, friction: false, blocks: [block(1), block(2), block(3)], links: ['none', 'contact'], longString: true,
+    applied: { F: 12, angle: 180, block: 1 },
+  });
+  close(r.bodies[1].a, -6);
+  close(r.bodies[0].a, 0);
+  close(r.bodies[2].a, 0);
+});
+
+test('a closed loop of connections is reported', () => {
+  const r = P.solveChain({
+    theta: 0, g, friction: false, blocks: [block(1), block(2), block(3)], links: ['contact', 'contact'], longString: true,
+  });
+  assert.equal(r.ok, false);
+});

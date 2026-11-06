@@ -11,12 +11,13 @@ It is a static web page: plain HTML, CSS and JavaScript, with no build step and 
 | **Atwood machine** | Two masses on one string over a massless, frictionless pulley. |
 | **Modified Atwood** | 1–3 blocks on a table, tied by a string over a pulley at the edge to a hanging block. |
 | **Inclined plane** | 1–3 blocks on a ramp at any angle (0–85°), with an optional hanging block over a pulley at the top. |
-| **Blocks on a surface** | 1–4 blocks on a level surface. |
+| **Blocks on a surface** | 1–4 blocks on a level surface, optionally with a string from the first block to the last. |
 
 On every surface you can:
 
 - set each block's mass;
-- choose whether neighboring blocks are **touching** (contact forces, Newton's third-law pairs) or **tied with a string** (tension);
+- choose whether neighboring blocks are **touching** (contact forces, Newton's third-law pairs) **tied with a string** (tension), or **apart**;
+- on a level surface with 3 or more blocks, tie a **long string from Block 1 to the last block** that passes over the blocks between (for example: Block 2 pushes Block 3, which pulls Block 1 along by the string);
 - turn on **friction** with static (μs) and kinetic (μk) coefficients, either shared or set per block;
 - add an **applied force** of any size and direction on any block (angled forces change the normal force);
 - pick g for Earth, the Moon, Mars or Jupiter.
