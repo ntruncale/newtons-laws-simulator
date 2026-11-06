@@ -370,7 +370,103 @@
     return { tRamp, v0, tAir, R: v0 * tAir, vLand: Math.hypot(v0, g * tAir) };
   }
 
-  const Physics = { DEG, solveAtwood, solveChain, buildChain, linkSigns, launch };
+  /* ---------- Elevator: a person on a scale ---------- */
+  // Motion choices. Each phase has an acceleration a (+ = up), a duration and a starting velocity.
+  const RIDE = { speed: 2.5, cruise: 3 };
+  function elevatorPhases(motion, A, g) {
+    const t = RIDE.speed;
+    switch (motion) {
+      case 'up-speed':
+        return [{ key: 'up-speed', label: 'Speeding up going up', a: A, dur: t, v0: 0 }];
+      case 'up-const':
+        return [{ key: 'up-const', label: 'Going up at constant speed', a: 0, dur: RIDE.cruise, v0: 2 }];
+      case 'up-slow':
+        return [{ key: 'up-slow', label: 'Slowing down going up', a: -A, dur: t, v0: A * t }];
+      case 'down-speed':
+        return [{ key: 'down-speed', label: 'Speeding up going down', a: -A, dur: t, v0: 0 }];
+      case 'down-const':
+        return [{ key: 'down-const', label: 'Going down at constant speed', a: 0, dur: RIDE.cruise, v0: -2 }];
+      case 'down-slow':
+        return [{ key: 'down-slow', label: 'Slowing down going down', a: A, dur: t, v0: -A * t }];
+      case 'freefall':
+        return [{ key: 'freefall', label: 'Falling freely (cable broken)', a: -g, dur: 1.5, v0: 0 }];
+      case 'ride-up':
+        return [
+          { key: 'up-speed', label: 'Speeding up going up', a: A, dur: t, v0: 0 },
+          { key: 'up-const', label: 'Constant speed going up', a: 0, dur: RIDE.cruise, v0: A * t },
+          { key: 'up-slow', label: 'Slowing down going up', a: -A, dur: t, v0: A * t },
+        ];
+      case 'ride-down':
+        return [
+          { key: 'down-speed', label: 'Speeding up going down', a: -A, dur: t, v0: 0 },
+          { key: 'down-const', label: 'Constant speed going down', a: 0, dur: RIDE.cruise, v0: -A * t },
+          { key: 'down-slow', label: 'Slowing down going down', a: A, dur: t, v0: -A * t },
+        ];
+      default:
+        return [];
+    }
+  }
+
+  /** { m: person, M: car (0 = ignore the cable), g, motion, A: size of the acceleration } */
+  function solveElevator({ m, M, g, motion, A }) {
+    const phases = elevatorPhases(motion, A, g);
+    for (const ph of phases) {
+      if (ph.a < -g - 1e-9) {
+        return {
+          kind: 'elevator',
+          ok: false,
+          error: 'With a downward acceleration larger than g, the person would float off the scale. Use an acceleration of at most ' + g + ' m/s².',
+          phases,
+        };
+      }
+      ph.N = Math.max(0, m * (g + ph.a)); // scale reading
+      ph.kg = ph.N / g; // what a scale marked in kg would show
+      ph.Fnet = m * ph.a;
+      ph.T = M > 0 ? (M + m) * (g + ph.a) : null;
+    }
+    let t0 = 0;
+    for (const ph of phases) {
+      ph.t0 = t0;
+      t0 += ph.dur;
+    }
+    return { kind: 'elevator', ok: true, m, M, g, A, motion, phases, W: m * g, tTotal: t0 };
+  }
+
+  /* ---------- Leg traction ---------- */
+  /** Two rope segments leave the foot pulley at th1 above and th2 below the horizontal; T = m g. */
+  function solveTraction({ m, th1, th2, g }) {
+    const T = m * g;
+    const a1 = th1 * DEG;
+    const a2 = th2 * DEG;
+    const Fx = T * (Math.cos(a1) + Math.cos(a2));
+    const Fy = T * (Math.sin(a1) - Math.sin(a2));
+    return { kind: 'traction', ok: true, m, g, th1, th2, T, Fx, Fy, F: Math.hypot(Fx, Fy), angle: Math.atan2(Fy, Fx) / DEG };
+  }
+
+  /* ---------- Human body: jumping, landing, sprint start ---------- */
+  function solveBody({ mode, m, g, d, h, v }) {
+    const W = m * g;
+    if (mode === 'jump') {
+      // push off over distance d, then rise h after leaving the floor
+      const v0 = Math.sqrt(2 * g * h);
+      const a = (v0 * v0) / (2 * d);
+      const F = m * (g + a);
+      return { kind: 'body', ok: true, mode, m, g, d, h, W, v: v0, a, F, ratio: F / W, tPush: v0 / a, tUp: v0 / g };
+    }
+    if (mode === 'land') {
+      // fall h onto the floor, then stop while the knees bend through d
+      const v0 = Math.sqrt(2 * g * h);
+      const a = (v0 * v0) / (2 * d);
+      const F = m * (g + a);
+      return { kind: 'body', ok: true, mode, m, g, d, h, W, v: v0, a, F, ratio: F / W, tFall: v0 / g, tStop: v0 / a };
+    }
+    // sprint: reach speed v over distance d
+    const a = (v * v) / (2 * d);
+    const f = m * a;
+    return { kind: 'body', ok: true, mode: 'sprint', m, g, d, v, W, a, f, N: W, Fground: Math.hypot(f, W), groundAngle: Math.atan2(W, f) / DEG, ratio: f / W, t: v / a };
+  }
+
+  const Physics = { DEG, solveAtwood, solveChain, buildChain, linkSigns, launch, solveElevator, solveTraction, solveBody };
   if (typeof module !== 'undefined' && module.exports) module.exports = Physics;
   else global.Physics = Physics;
 })(typeof window !== 'undefined' ? window : globalThis);

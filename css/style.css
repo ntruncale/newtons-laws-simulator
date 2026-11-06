@@ -513,3 +513,4 @@ input[disabled] { color: var(--muted); cursor: not-allowed; }
 .qrow { grid-template-columns: minmax(0, 1fr) 120px 60px minmax(130px, 0.6fr); }
 @media (max-width: 600px) { .qrow { grid-template-columns: minmax(0, 1fr) 104px 50px; } }
 .fbd-scroll canvas { height: 320px; }
+.field.stack { grid-template-columns: minmax(0, 1fr); gap: 4px; }

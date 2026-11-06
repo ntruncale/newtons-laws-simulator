@@ -225,3 +225,48 @@ test('projectile launch from the ramp', () => {
   close(L.tAir, Math.sqrt(2.4 / g));
   close(L.R, 4 * Math.sqrt(2.4 / g));
 });
+
+test('elevator scale readings', () => {
+  const up = P.solveElevator({ m: 60, M: 0, g, motion: 'up-speed', A: 2 });
+  close(up.phases[0].N, 60 * (g + 2));
+  const down = P.solveElevator({ m: 60, M: 0, g, motion: 'down-speed', A: 2 });
+  close(down.phases[0].N, 60 * (g - 2));
+  const c = P.solveElevator({ m: 60, M: 0, g, motion: 'up-const', A: 2 });
+  close(c.phases[0].N, 60 * g);
+  const ff = P.solveElevator({ m: 60, M: 0, g, motion: 'freefall', A: 2 });
+  close(ff.phases[0].N, 0);
+  const ride = P.solveElevator({ m: 60, M: 500, g, motion: 'ride-up', A: 1.5 });
+  assert.equal(ride.phases.length, 3);
+  close(ride.phases[2].N, 60 * (g - 1.5));
+  close(ride.phases[0].T, 560 * (g + 1.5));
+  // the ride ends at rest
+  const last = ride.phases[2];
+  close(last.v0 + last.a * last.dur, 0);
+});
+
+test('elevator rejects a downward acceleration bigger than g', () => {
+  const r = P.solveElevator({ m: 60, M: 0, g, motion: 'down-speed', A: 12 });
+  assert.equal(r.ok, false);
+});
+
+test('leg traction', () => {
+  // OpenStax-style: 2.0 kg, both segments at 30 degrees above and below
+  const r = P.solveTraction({ m: 2, th1: 30, th2: 30, g });
+  close(r.T, 2 * g);
+  close(r.Fx, 2 * 2 * g * Math.cos(30 * P.DEG));
+  close(r.Fy, 0);
+  const r2 = P.solveTraction({ m: 3, th1: 40, th2: 10, g });
+  close(r2.Fy, 3 * g * (Math.sin(40 * P.DEG) - Math.sin(10 * P.DEG)));
+});
+
+test('jumping, landing and sprint start', () => {
+  const j = P.solveBody({ mode: 'jump', m: 60, g, d: 0.4, h: 0.5 });
+  close(j.v, Math.sqrt(2 * g * 0.5));
+  close(j.a, (2 * g * 0.5) / 0.8);
+  close(j.F, 60 * (g + j.a));
+  const l = P.solveBody({ mode: 'land', m: 70, g, d: 0.5, h: 1 });
+  close(l.F, 70 * g * (1 + 1 / 0.5)); // F = mg(1 + h/d)
+  const s = P.solveBody({ mode: 'sprint', m: 70, g, d: 10, v: 8 });
+  close(s.a, 3.2);
+  close(s.f, 224);
+});

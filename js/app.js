@@ -19,7 +19,7 @@
     [24.79, 'Jupiter, 24.79 m/s²'],
   ];
   const MAX_BLOCKS = { modified: 3, incline: 3, horizontal: 4 };
-  const SCENARIOS = ['atwood', 'modified', 'incline', 'horizontal'];
+  const SCENARIOS = ['atwood', 'modified', 'incline', 'horizontal', 'elevator', 'body'];
 
   const blk = (m) => ({ m, mus: 0.4, muk: 0.3 });
   function surfaceDefaults(o) {
@@ -54,10 +54,12 @@
         links: ['contact'],
         applied: { on: true, F: 20, angle: 0, block: 0 },
       }),
+      elevator: ELEV.defaults(),
+      body: BODY.defaults(),
     };
   }
 
-  let state = defaults();
+  let state; // created in init(), once every module is defined
   let analysis = null; // physics result
   let sim = null; // geometry + motion for the current analysis
   let labels = null; // names for link forces
@@ -90,11 +92,13 @@
   }
   const launchActive = () => state.scenario === 'incline' && cur().launch.on && !launchBlocked(cur());
 
-  const mysteryOn = () => !!(cur().mystery && cur().mystery.on);
+  const mysteryOn = () => !!(cur().mystery && cur().mystery.on) && mysteryTargets().length > 0;
   function mysteryTargets() {
     const sc = state.scenario;
     const c = cur();
     if (sc === 'atwood') return [['m1', 'Mass 1'], ['m2', 'Mass 2']];
+    if (sc === 'elevator') return [['person', 'Person']];
+    if (sc === 'body') return [];
     const out = c.blocks.map((b, i) => ['b' + i, 'Block ' + (i + 1)]);
     const nb = c.blocks.length;
     const hang = sc === 'modified' || (sc === 'incline' && c.hanging.on);
@@ -105,6 +109,7 @@
   function mysteryTarget() {
     const t = cur().mystery.target;
     const list = mysteryTargets();
+    if (!list.length) return '';
     return list.some((x) => x[0] === t) ? t : list[0][0];
   }
   const isMystery = (target) => mysteryOn() && mysteryTarget() === target;
@@ -113,7 +118,7 @@
   function mysteryBodyIndex() {
     if (!mysteryOn() || !analysis) return -1;
     const t = mysteryTarget();
-    if (t === 'm1') return 0;
+    if (t === 'm1' || t === 'person') return 0;
     if (t === 'm2') return 1;
     if (t[0] === 'b') return +t.slice(1);
     if (!analysis.bodies) return -1;
@@ -125,14 +130,20 @@
   function newMystery() {
     const key = state.scenario + ':' + mysteryTarget();
     for (let k = 0; k < 40; k++) {
-      ui.mystery = { key, value: Math.round((0.5 + Math.random() * 9.5) * 2) / 2 };
-      const an = isAtwood() ? P.solveAtwood(atwoodInput()) : P.solveChain(physicsInput());
+      const value = state.scenario === 'elevator' ? Math.round(40 + Math.random() * 60) : Math.round((0.5 + Math.random() * 9.5) * 2) / 2;
+      ui.mystery = { key, value };
+      const an = solveCurrent();
       if (an.ok && !an.atRest) return;
     }
   }
   function ensureMystery() {
     if (!mysteryOn()) return;
     if (ui.mystery.key !== state.scenario + ':' + mysteryTarget()) newMystery();
+  }
+  function solveCurrent() {
+    const mod = scenarioModule();
+    if (mod) return mod.solve(cur());
+    return isAtwood() ? P.solveAtwood(atwoodInput()) : P.solveChain(physicsInput());
   }
   const atwoodInput = () => ({ m1: massOf('m1', state.atwood.m1), m2: massOf('m2', state.atwood.m2), g: state.g });
 
@@ -211,6 +222,7 @@
 
   function computeLabels(an) {
     if (an.kind === 'atwood') return { links: [{ onLeft: 'T', onRight: 'T', name: 'T' }] };
+    if (!an.links) return { links: [] };
     const nStrings = an.links.filter((l) => l.type === 'string').length;
     let k = 0;
     const links = an.links.map((l) => {
@@ -264,8 +276,8 @@
   const hiddenMass = (label) =>
     '<label class="field"><span>' + label + ' <span class="unit">(kg)</span></span><input type="text" value="?" disabled aria-label="' +
     label + ' is the mystery mass"></label>';
-  const selectField = (label, id, path, options, value) =>
-    '<label class="field" for="' + id + '"><span>' + label + '</span><select id="' + id + '" data-path="' + path + '">' +
+  const selectField = (label, id, path, options, value, stacked) =>
+    '<label class="field' + (stacked ? ' stack' : '') + '" for="' + id + '"><span>' + label + '</span><select id="' + id + '" data-path="' + path + '">' +
     options.map(([v, t]) => '<option value="' + v + '"' + (String(v) === String(value) ? ' selected' : '') + '>' + t + '</option>').join('') +
     '</select></label>';
 
@@ -275,7 +287,9 @@
     ensureMystery();
     let h = '';
 
-    if (sc === 'atwood') {
+    if (scenarioModule()) {
+      h += scenarioModule().controls(c);
+    } else if (sc === 'atwood') {
       h += '<div class="group"><h2>Masses</h2>';
       h += '<div class="blk"><span class="tag" style="background:var(--b1)">1</span>' +
         (isMystery('m1') ? hiddenMass('Mass 1') : numField('Mass 1', 'm1', c.m1, 'kg', { min: 0.01, step: 0.1 })) + '<span></span></div>';
@@ -407,7 +421,7 @@
       '<button type="button" class="btn btn-small" data-action="share">Copy link to this setup</button>' +
       '<button type="button" class="btn btn-small btn-quiet" data-action="defaults">Start over</button>' +
       '</div><p class="note" id="share-msg" hidden></p>' +
-      checkField('Mystery mass', 'mystery.on', mysteryOn());
+      (mysteryTargets().length ? checkField('Mystery mass', 'mystery.on', mysteryOn()) : '');
     if (mysteryOn()) {
       h += selectField('Hide the mass of', 'sel-mystery', 'mystery.target', mysteryTargets(), mysteryTarget());
       h += '<div class="btn-row"><button type="button" class="btn btn-small" data-action="mystery">New mystery mass</button></div>';
@@ -459,6 +473,13 @@
       if (path === 'mystery.target') {
         ui.pred = {};
         newMystery();
+        renderControls();
+      }
+      if (path === 'mode' || path === 'motion') {
+        ui.pred = {};
+        ui.solutionOpen = false;
+        ui.graph = 'x';
+        document.querySelectorAll('[data-graph]').forEach((x) => x.classList.toggle('on', x.dataset.graph === 'x'));
         renderControls();
       }
       changed();
@@ -518,7 +539,9 @@
   function randomize() {
     const r = (a, b, step) => Math.round((a + Math.random() * (b - a)) / step) * step;
     const c = cur();
-    if (isAtwood()) {
+    if (scenarioModule()) {
+      scenarioModule().randomize(c, r);
+    } else if (isAtwood()) {
       c.m1 = r(1, 10, 0.5);
       do c.m2 = r(1, 10, 0.5); while (c.m2 === c.m1);
     } else {
@@ -586,7 +609,10 @@
       const c = data.c || {};
       const my = c.mystery || {};
       const mystery = { on: !!my.on, target: typeof my.target === 'string' ? my.target : data.scenario === 'atwood' ? 'm1' : 'b0' };
-      if (data.scenario === 'atwood') {
+      const mod = { elevator: ELEV, body: BODY }[data.scenario];
+      if (mod) {
+        state[data.scenario] = Object.assign(mod.load(c, num), data.scenario === 'elevator' ? { mystery: { on: !!my.on, target: 'person' } } : {});
+      } else if (data.scenario === 'atwood') {
         state.atwood = { m1: num(c.m1, 3, 0.01, 1000), m2: num(c.m2, 5, 0.01, 1000), mystery };
       } else {
         const d = base[data.scenario];
@@ -642,7 +668,7 @@
 
   function changed() {
     ensureMystery();
-    analysis = isAtwood() ? P.solveAtwood(atwoodInput()) : P.solveChain(physicsInput());
+    analysis = solveCurrent();
     labels = computeLabels(analysis);
     sim = buildSim(analysis);
     anim.t = 0;
@@ -689,6 +715,7 @@
 
   function buildSim(an) {
     if (!an.ok) return { error: true };
+    if (xsFor(an)) return xsFor(an).buildSim(an);
     return an.kind === 'atwood' ? buildAtwoodSim(an) : buildSurfaceSim(an);
   }
 
@@ -835,6 +862,7 @@
   // Displacement and velocity of a body along its own + direction.
   // For a launch, x is horizontal distance from the table edge and v splits into vx, vy.
   function bodyMotion(i, t) {
+    if (xsFor(analysis)) return xsFor(analysis).motion(analysis, t);
     const b = analysis.bodies[i];
     const a = b.a;
     const fl = sim && sim.geom && sim.geom.flight;
@@ -1016,6 +1044,10 @@
       return;
     }
     if (W < 40 || H < 40) return;
+    if (xsFor(analysis)) {
+      xsFor(analysis).draw(ctx, W, H, anim.t);
+      return;
+    }
     const view = fitView(sim.geom.bbox, W, H);
     drawGrid(ctx, W, H, view);
     if (sim.kind === 'atwood') drawAtwood(ctx, view, anim.t);
@@ -1446,6 +1478,7 @@
   // Returns, for each body, a list of force arrows (world direction + magnitude).
   function forceSets() {
     const an = analysis;
+    if (xsFor(an)) return xsFor(an).forceSets(an, anim.t);
     if (an.kind === 'atwood') {
       return an.bodies.map((b, i) => ({
         body: b,
@@ -1613,7 +1646,7 @@
       ctx.font = '700 15px ' + C.fontBody;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'alphabetic';
-      ctx.fillText(s.body.name.replace(/ \((hanging|on top)\)/, '') + ' · ' + massText(s.idx, s.body.m) + ' kg', cx, baseH - 22);
+      ctx.fillText(s.body.name.replace(/ \((hanging|on top)\)/, '') + (s.body.m == null ? '' : ' · ' + massText(s.idx, s.body.m) + ' kg'), cx, baseH - 22);
       if (ui.showFbdValues) {
         ctx.font = '600 14px ' + C.fontMono;
         s.arrows
@@ -1632,6 +1665,12 @@
     if (!analysis.ok) {
       legend.innerHTML = '';
       pairs.innerHTML = '';
+      return;
+    }
+    if (xsFor(analysis)) {
+      const out = xsFor(analysis).legend(analysis, (ui.showFbdValues || ui.revealed) && !(mysteryOn() && !ui.revealed));
+      legend.innerHTML = out.legend;
+      pairs.innerHTML = out.pairs;
       return;
     }
     const chip = (color, text) => '<span><i style="background:' + color + '"></i>' + text + '</span>';
@@ -1714,7 +1753,9 @@
     const i = Math.min(ui.track, analysis.bodies.length - 1);
     const tEnd = sim.tStop;
     const launching = !!(sim.geom && sim.geom.flight);
+    const xmod = xsFor(analysis);
     const fn = (t) => {
+      if (xmod) return xmod.graphValue(analysis, ui.graph, t);
       const m = bodyMotion(i, t);
       if (launching) return ui.graph === 'x' ? m.x : ui.graph === 'v' ? m.vx : m.vy;
       return ui.graph === 'x' ? m.s : ui.graph === 'v' ? m.v : m.a;
@@ -1780,8 +1821,11 @@
     ctx.translate(14, T + (H - T - B) / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.textBaseline = 'middle';
+    const xsLabels = xmod ? (typeof xmod.graphLabel === 'function' ? xmod.graphLabel() : xmod.graphLabel) : null;
     ctx.fillText(
-      launching
+      xsLabels
+        ? xsLabels[ui.graph]
+        : launching
         ? ui.graph === 'x' ? 'x from table edge (m)' : ui.graph === 'v' ? 'vₓ (m/s)' : 'v_y (m/s)'
         : ui.graph === 'x' ? 'displacement (m)' : ui.graph === 'v' ? 'velocity (m/s)' : 'acceleration (m/s²)',
       0,
@@ -1849,6 +1893,15 @@
     const mi = mysteryBodyIndex();
     if (mi >= 0) {
       q.push({ key: 'mystery', group: 'main', label: 'Mystery mass: ' + an.bodies[mi].name, sub: 'Measure the motion, then work back to the mass (within 5% counts as correct)', unit: 'kg', value: an.bodies[mi].m, tol: 0.05 });
+    }
+    if (xsFor(an)) {
+      const extra = xsFor(an).quantities(an);
+      // the mystery row joins the first group shown
+      if (q.length) {
+        q[0].group = 'mys';
+        q[0].groupTitle = 'The mystery mass';
+      }
+      return q.concat(extra);
     }
     if (an.kind === 'atwood') {
       q.push({ key: 'a', group: 'main', label: 'Acceleration of the system', unit: 'm/s²', value: Math.abs(an.a) });
@@ -1926,13 +1979,30 @@
           ' value="' + esc(ui.pred[q.key] ?? '') + '" aria-label="Your answer for ' + esc(q.label) + '">' +
           '<span class="qu">' + q.unit + '</span><span class="qr" aria-live="polite">' + (q.na ? esc(q.na) : '') + '</span></div>';
       };
-      const main = qs.filter((q) => q.group === 'main');
       const more = qs.filter((q) => q.group === 'more');
       const lau = qs.filter((q) => q.group === 'launch');
+      // other groups in the order they first appear
+      const order = [];
+      qs.forEach((q) => {
+        if (q.group !== 'more' && q.group !== 'launch' && !order.includes(q.group)) order.push(q.group);
+      });
+      const titleOf = (gname) => {
+        const withTitle = qs.find((q) => q.group === gname && q.groupTitle);
+        if (withTitle) return withTitle.groupTitle;
+        return lau.length ? 'On the ramp' : xsFor(analysis) ? 'Your answers' : 'System';
+      };
+      const xs = xsFor(analysis);
+      const moreTitle = xs
+        ? xs.moreTitle
+        : analysis.kind === 'atwood'
+          ? 'More: net force on each mass'
+          : analysis.friction
+            ? 'More: normal, friction and net force on each block'
+            : 'More: normal and net force on each block';
       $('check-rows').innerHTML =
-        '<div class="check-group"><h3>' + (lau.length ? 'On the ramp' : 'System') + '</h3>' + main.map(row).join('') + '</div>' +
+        order.map((gname) => '<div class="check-group"><h3>' + esc(titleOf(gname)) + '</h3>' + qs.filter((q) => q.group === gname).map(row).join('') + '</div>').join('') +
         (lau.length ? '<div class="check-group"><h3>Flying off the table</h3>' + lau.map(row).join('') + '</div>' : '') +
-        (more.length ? '<details class="check-group"><summary>' + (analysis.kind === 'atwood' ? 'More: net force on each mass' : (analysis.friction ? 'More: normal, friction and net force on each block' : 'More: normal and net force on each block')) + '</summary>' + more.map(row).join('') + '</details>' : '');
+        (more.length ? '<details class="check-group"><summary>' + moreTitle + '</summary>' + more.map(row).join('') + '</details>' : '');
     } else {
       document.querySelectorAll('.qrow').forEach((r) => {
         r.classList.remove('good', 'bad');
@@ -1995,6 +2065,7 @@
   function solutionHTML() {
     const an = analysis;
     if (!an.ok) return '<p>' + esc(an.error) + '</p>';
+    if (xsFor(an)) return xsFor(an).solution(an);
     const g = fmt(an.g);
     let h = '';
     if (an.kind === 'atwood') {
@@ -2193,6 +2264,876 @@
   }
 
   /* ======================================================================
+   * Extra scenarios: elevator and human body
+   * Each module supplies its own controls, solving, scene, diagrams,
+   * check rows and worked solution. The shared code calls into XS[kind].
+   * ==================================================================== */
+
+  const ELEVATOR_MOTIONS = [
+    ['up-speed', 'Starting up: speeding up going up'],
+    ['up-const', 'Going up at constant speed'],
+    ['up-slow', 'Arriving at the top: slowing down going up'],
+    ['down-speed', 'Starting down: speeding up going down'],
+    ['down-const', 'Going down at constant speed'],
+    ['down-slow', 'Arriving at the bottom: slowing down going down'],
+    ['ride-up', 'A full ride up (all three stages)'],
+    ['ride-down', 'A full ride down (all three stages)'],
+    ['freefall', 'The cable breaks: free fall'],
+  ];
+  const BODY_MODES = [
+    ['traction', 'Leg in traction (pulleys)'],
+    ['jump', 'Jumping straight up'],
+    ['land', 'Landing from a height'],
+    ['sprint', 'Sprint start'],
+  ];
+
+  // A simple person: hip at (x, yHip), feet on the floor if yFoot is given.
+  function drawPerson(ctx, view, x, yHip, opts = {}) {
+    const P = view.P;
+    const L = opts.leg || 0.92;
+    const yFoot = opts.yFoot ?? yHip - L;
+    const reach = Math.max(0, yHip - yFoot);
+    const k = reach < L ? Math.sqrt(Math.max(0, (L / 2) ** 2 - (reach / 2) ** 2)) : 0; // knee bends forward
+    const swing = opts.swing || 0;
+    const torso = 0.62;
+    const headR = 0.12;
+    ctx.save();
+    ctx.strokeStyle = C.ink;
+    ctx.lineWidth = Math.max(2, view.k * 0.045);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    const line = (pts) => {
+      ctx.beginPath();
+      pts.forEach(([a, b], i) => {
+        const [px, py] = P(a, b);
+        i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+      });
+      ctx.stroke();
+    };
+    // legs (two, slightly apart; swing for running)
+    for (const side of [-1, 1]) {
+      const dx = side * 0.06 + side * swing * 0.25;
+      const knee = [x + dx * 0.5 + k, (yHip + yFoot) / 2];
+      line([[x, yHip], knee, [x + dx, yFoot]]);
+    }
+    // torso, head, arms
+    const lean = opts.lean || 0;
+    const shoulder = [x + lean, yHip + torso];
+    line([[x, yHip], shoulder]);
+    const [hx, hy] = P(shoulder[0] + lean * 0.3, shoulder[1] + headR + 0.04);
+    ctx.fillStyle = bodyColor(0);
+    ctx.beginPath();
+    ctx.arc(hx, hy, headR * view.k, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.stroke();
+    const arm = opts.arms || 'down';
+    for (const side of [-1, 1]) {
+      const end = arm === 'up' ? [shoulder[0] + side * 0.18, shoulder[1] + 0.45] : [shoulder[0] + side * 0.16 - swing * side * 0.2, shoulder[1] - 0.5];
+      line([shoulder, [shoulder[0] + side * 0.1, shoulder[1] - 0.25 + (arm === 'up' ? 0.35 : 0)], end]);
+    }
+    if (opts.label) {
+      ctx.fillStyle = C.ink;
+      ctx.font = '700 ' + Math.max(12, Math.min(16, view.k * 0.11)) + 'px ' + C.fontMono;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      if (opts.labelLeft) {
+        ctx.textAlign = 'right';
+        const [lx, ly] = P(x - 0.24 + lean, yHip + torso * 0.55);
+        ctx.fillText(opts.label, lx, ly);
+      } else {
+        const [lx, ly] = P(x + 0.22 + lean, yHip + torso * 0.55);
+        ctx.fillText(opts.label, lx, ly);
+      }
+    }
+    ctx.restore();
+  }
+
+  function labelText(ctx, text, x, y, color, align = 'center', size = 14, weight = 700, font) {
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.font = weight + ' ' + size + 'px ' + (font || C.fontMono);
+    ctx.textAlign = align;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, y);
+    ctx.restore();
+  }
+
+  /* ---------------- Elevator ---------------- */
+  const ELEV = {
+    defaults: () => ({ m: 60, motion: 'ride-up', A: 1.5, cable: false, M: 800, mystery: { on: false, target: 'person' } }),
+    solve(c) {
+      const an = P.solveElevator({ m: massOf('person', c.m), M: c.cable ? c.M : 0, g: state.g, motion: c.motion, A: c.A });
+      an.bodies = [{ name: 'Person', m: an.m, kind: 'person', a: 0 }];
+      if (c.cable) an.bodies.push({ name: 'Elevator car', m: c.M, kind: 'car', a: 0 });
+      an.atRest = false;
+      return an;
+    },
+    controls(c) {
+      let h = '<div class="group"><h2>Person on a scale</h2>' +
+        '<div class="blk"><span class="tag" style="background:var(--b1)">P</span>' +
+        (isMystery('person') ? hiddenMass('Person’s mass') : numField('Person’s mass', 'm', c.m, 'kg', { min: 1, max: 300, step: 1 })) + '<span></span></div>' +
+        '<p class="note">The scale reads the normal force it pushes up with.</p></div>';
+      h += '<div class="group"><h2>Motion</h2>' + selectField('What the elevator does', 'sel-motion', 'motion', ELEVATOR_MOTIONS, c.motion, true);
+      if (!/const|freefall/.test(c.motion)) h += numField('Size of the acceleration', 'A', c.A, 'm/s²', { min: 0.1, max: 6, step: 0.1 });
+      if (/ride/.test(c.motion)) h += '<p class="note">The ride speeds up for 2.5 s, moves at constant speed for 3 s, then slows to a stop over 2.5 s.</p>';
+      if (c.motion === 'freefall') h += '<p class="note">Starting at rest, the car and person both fall with acceleration g.</p>';
+      h += '</div>';
+      h += '<div class="group"><h2>Cable</h2>' + checkField('Also find the tension in the cable', 'cable', c.cable);
+      if (c.cable) h += numField('Mass of the elevator car', 'M', c.M, 'kg', { min: 1, max: 10000, step: 10 });
+      h += '</div>';
+      return h;
+    },
+    randomize(c, r) {
+      c.m = r(40, 100, 1);
+      c.A = r(0.5, 3, 0.1);
+      c.M = r(400, 1500, 50);
+    },
+    load(c, num) {
+      const d = ELEV.defaults();
+      return {
+        m: num(c.m, d.m, 1, 300),
+        motion: ELEVATOR_MOTIONS.some((x) => x[0] === c.motion) ? c.motion : d.motion,
+        A: num(c.A, d.A, 0.1, 6),
+        cable: !!c.cable,
+        M: num(c.M, d.M, 1, 10000),
+      };
+    },
+    // position, velocity, acceleration and scale reading at time t
+    state(an, t) {
+      let y = 0;
+      for (const ph of an.phases) {
+        if (t <= ph.t0 + ph.dur + 1e-12 || ph === an.phases[an.phases.length - 1]) {
+          const tau = Math.min(Math.max(0, t - ph.t0), ph.dur);
+          return { y: y + ph.v0 * tau + 0.5 * ph.a * tau * tau, v: ph.v0 + ph.a * tau, a: ph.a, N: ph.N, T: ph.T, ph };
+        }
+        y += ph.v0 * ph.dur + 0.5 * ph.a * ph.dur * ph.dur;
+      }
+      return null;
+    },
+    buildSim(an) {
+      let lo = 0;
+      let hi = 0;
+      for (let k = 0; k <= 200; k++) {
+        const y = ELEV.state(an, (an.tTotal * k) / 200).y;
+        lo = Math.min(lo, y);
+        hi = Math.max(hi, y);
+      }
+      const y0 = -lo + 3; // start a floor above the bottom so there is room below
+      const top = hi - lo + 6;
+      const last = an.phases[an.phases.length - 1];
+      const reason = an.motion === 'freefall' ? 'The emergency brakes would stop the car here' : /slow|ride/.test(last.key) ? 'The elevator has stopped' : 'Time is up for this stage';
+      return { kind: 'elevator', y0, top, tStop: an.tTotal, reason };
+    },
+    motion(an, t) {
+      const st = ELEV.state(an, t);
+      return { s: st.y, v: st.v, a: st.a };
+    },
+    graphNames: { x: 'Height–time', v: 'Velocity–time', a: 'Scale reading–time' },
+    graphValue(an, which, t) {
+      const st = ELEV.state(an, t);
+      return which === 'x' ? st.y : which === 'v' ? st.v : st.N;
+    },
+    graphLabel: { x: 'height (m)', v: 'velocity (m/s)', a: 'scale reading (N)' },
+    draw(ctx, W, H, t) {
+      const an = analysis;
+      const st = ELEV.state(an, t);
+      const yc = sim.y0 + st.y + 1.3;
+      const view = fitView({ x0: -2.8, x1: 3.2, y0: yc - 2.6, y1: yc + 2.6 }, W, H);
+      const P = view.P;
+      drawGrid(ctx, W, H, view);
+      // building: walls and floors
+      ctx.save();
+      const [bx0] = P(-2.7, 0);
+      const [bx1] = P(2.7, 0);
+      const [, byTop] = P(0, sim.top);
+      const [, byBot] = P(0, 0);
+      ctx.fillStyle = C.bench;
+      ctx.globalAlpha = 0.35;
+      ctx.fillRect(bx0, byTop, bx1 - bx0, byBot - byTop);
+      ctx.globalAlpha = 1;
+      const [sx0] = P(-1.35, 0);
+      const [sx1] = P(1.35, 0);
+      ctx.fillStyle = C.scene;
+      ctx.fillRect(sx0, byTop, sx1 - sx0, byBot - byTop);
+      ctx.strokeStyle = C['bench-edge'];
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(sx0, byTop);
+      ctx.lineTo(sx0, byBot);
+      ctx.moveTo(sx1, byTop);
+      ctx.lineTo(sx1, byBot);
+      ctx.stroke();
+      for (let f = 0; f * 3 <= sim.top + 0.01; f++) {
+        const [, fy] = P(0, f * 3);
+        ctx.strokeStyle = C['bench-edge'];
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(bx0, fy);
+        ctx.lineTo(sx0, fy);
+        ctx.moveTo(sx1, fy);
+        ctx.lineTo(bx1, fy);
+        ctx.stroke();
+        labelText(ctx, W < 520 ? f * 3 + ' m' : 'Floor ' + (f + 1) + ' · ' + f * 3 + ' m', bx0 + 6, fy - 12, C.muted, 'left', 13, 600, C.fontBody);
+      }
+      ctx.restore();
+
+      // ghosts of the car
+      for (const ts of strobeTimes(t)) {
+        const g0 = sim.y0 + ELEV.state(an, ts).y;
+        const [gx0, gy0] = P(-1.15, g0 + 2.6);
+        const [gx1, gy1] = P(1.15, g0);
+        ctx.save();
+        ctx.globalAlpha = 0.25;
+        ctx.strokeStyle = C.ink;
+        ctx.strokeRect(gx0, gy0, gx1 - gx0, gy1 - gy0);
+        ctx.restore();
+      }
+
+      // cable
+      const yb = sim.y0 + st.y; // car floor
+      const [cx, cyTop] = P(0, yb + 2.6);
+      ctx.save();
+      ctx.strokeStyle = C.ink;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      if (an.motion === 'freefall') {
+        ctx.moveTo(cx, cyTop);
+        ctx.lineTo(cx + 6, cyTop - 30);
+        ctx.lineTo(cx - 4, cyTop - 50);
+      } else {
+        ctx.moveTo(cx, cyTop);
+        ctx.lineTo(cx, 0);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      // car
+      const [x0, y0] = P(-1.15, yb + 2.6);
+      const [x1, y1] = P(1.15, yb);
+      ctx.save();
+      ctx.fillStyle = C.panel;
+      ctx.strokeStyle = C.ink;
+      ctx.lineWidth = 2;
+      ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+      ctx.restore();
+      // scale on the floor
+      const [qx0, qy0] = P(-0.75, yb + 0.12);
+      const [qx1, qy1] = P(-0.05, yb);
+      ctx.save();
+      ctx.fillStyle = bodyColor(1);
+      ctx.strokeStyle = C.ink;
+      ctx.fillRect(qx0, qy0, qx1 - qx0, qy1 - qy0);
+      ctx.strokeRect(qx0, qy0, qx1 - qx0, qy1 - qy0);
+      ctx.restore();
+      drawPerson(ctx, view, -0.4, yb + 0.12 + 0.92, { yFoot: yb + 0.12, arms: st.a < -an.g + 1e-9 ? 'up' : 'down', label: W < 520 ? '' : massText(0, an.m) + ' kg', labelLeft: true });
+      // scale display on the back wall
+      const [dx0, dy0] = P(0.15, yb + 2.3);
+      const [dx1, dy1] = P(1.05, yb + 1.45);
+      ctx.save();
+      ctx.fillStyle = C.scene;
+      ctx.strokeStyle = C.accent;
+      ctx.lineWidth = 2;
+      ctx.fillRect(dx0, dy0, dx1 - dx0, dy1 - dy0);
+      ctx.strokeRect(dx0, dy0, dx1 - dx0, dy1 - dy0);
+      ctx.restore();
+      const big = Math.max(13, Math.min(22, view.k * 0.2));
+      labelText(ctx, 'SCALE', (dx0 + dx1) / 2, dy0 + big * 0.55, C.muted, 'center', Math.round(big * 0.55), 600, C.fontBody);
+      labelText(ctx, Math.round(st.N) + ' N', (dx0 + dx1) / 2, (dy0 + dy1) / 2 + 2, C.accent, 'center', big, 700);
+      labelText(ctx, fmt(st.N / an.g, 1) + ' kg', (dx0 + dx1) / 2, dy1 - big * 0.55, C.ink, 'center', Math.round(big * 0.7), 600);
+
+      // velocity and acceleration arrows beside the car
+      const ax = 1.75;
+      const [ax0, ay0] = P(ax, yb + 1.3);
+      const scaleA = view.k * 0.28;
+      if (Math.abs(st.a) > 1e-9) {
+        const len = Math.max(18, Math.min(110, Math.abs(st.a) * scaleA));
+        arrow(ctx, ax0, ay0, ax0, ay0 - Math.sign(st.a) * len, C['f-a'], 3, 11);
+        labelText(ctx, 'a', ax0 + 12, ay0 - Math.sign(st.a) * len * 0.6, C['f-a'], 'left', 15);
+      } else labelText(ctx, 'a = 0', ax0 + 6, ay0, C['f-a'], 'left', 14);
+      const [vx0, vy0] = P(ax + 0.6, yb + 1.3);
+      if (Math.abs(st.v) > 1e-9) {
+        const len = Math.max(18, Math.min(110, Math.abs(st.v) * view.k * 0.18));
+        arrow(ctx, vx0, vy0, vx0, vy0 - Math.sign(st.v) * len, C['f-n'], 3, 11);
+        labelText(ctx, 'v', vx0 + 12, vy0 - Math.sign(st.v) * len * 0.6, C['f-n'], 'left', 15);
+      } else labelText(ctx, 'v = 0', vx0 + 6, vy0 + 18, C['f-n'], 'left', 14);
+      // stage name at the top
+      labelText(ctx, st.ph.label, 12, 18, C.ink, 'left', 15, 700, C.fontBody);
+    },
+    forceSets(an, t) {
+      const st = ELEV.state(an, t || 0);
+      const sets = [{
+        body: an.bodies[0],
+        idx: 0,
+        tilt: 0,
+        arrows: [
+          { dir: { x: 0, y: -1 }, mag: an.W, color: C['f-w'], label: 'W' },
+          { dir: { x: 0, y: 1 }, mag: st.N, color: C['f-n'], label: 'N' },
+        ],
+      }];
+      if (an.M > 0) {
+        sets.push({
+          body: an.bodies[1],
+          idx: 1,
+          tilt: 0,
+          arrows: [
+            { dir: { x: 0, y: 1 }, mag: st.T, color: C.l1, label: 'T' },
+            { dir: { x: 0, y: -1 }, mag: an.M * an.g, color: C['f-w'], label: 'W_car' },
+            { dir: { x: 0, y: -1 }, mag: st.N, color: C['f-n'], label: 'N′' },
+          ],
+        });
+      }
+      return sets;
+    },
+    fbdCaption(an, t) {
+      return 'Showing: ' + ELEV.state(an, t || 0).ph.label.toLowerCase() + (an.phases.length > 1 ? '. Press Play to watch the forces change.' : '.');
+    },
+    legend(an, showV) {
+      const chip = (color, text) => '<span><i style="background:' + color + '"></i>' + text + '</span>';
+      let legend = chip('var(--f-w)', 'W: weight') + chip('var(--f-n)', 'N: the scale pushes up on the person');
+      if (an.M > 0) legend += chip('var(--f-n)', 'N′: the person pushes down on the scale') + chip('var(--l1)', 'T: cable tension');
+      const items = [
+        '<span class="swatch" style="background:var(--f-n)"></span><b>N</b> (scale pushes up on the person) and the person pushing down on the scale' + (an.M > 0 ? ' (<b>N′</b>)' : '') +
+          ' are a <b>third-law pair</b>. The scale shows the size of this force, which is why it can read more or less than your weight.',
+        '<b>W and N are not a pair.</b> They both act on the person. They are equal only when the elevator is not accelerating.',
+        '<b>Weight:</b> Earth pulls the person down and the person pulls Earth up just as hard.',
+      ];
+      if (showV) items.unshift('Your true weight is W = mg = ' + fmt(an.W) + ' N. It never changes; only the scale reading does.');
+      return { legend, pairs: '<h3>Action–reaction pairs</h3><ul>' + items.map((x) => '<li>' + x + '</li>').join('') + '</ul>' };
+    },
+    quantities(an) {
+      const q = [];
+      const multi = an.phases.length > 1;
+      an.phases.forEach((ph, k) => {
+        const group = multi ? 'ph' + k : 'main';
+        const title = multi ? ph.label : 'The person on the scale';
+        q.push({ key: 'N' + k, group, groupTitle: title, label: 'Scale reading', sub: 'the normal force on the person', unit: 'N', value: ph.N });
+        q.push({ key: 'kg' + k, group, groupTitle: title, label: 'What a scale marked in kg would show', sub: 'reading ÷ g', unit: 'kg', value: ph.kg });
+        if (an.M > 0) q.push({ key: 'T' + k, group, groupTitle: title, label: 'Tension in the cable', unit: 'N', value: ph.T });
+        q.push({ key: 'net' + k, group: 'more', label: 'Net force on the person' + (multi ? ' (' + ph.label.toLowerCase() + ')' : ''), unit: 'N', value: Math.abs(ph.Fnet) });
+      });
+      q.push({ key: 'W', group: 'more', label: 'The person’s true weight', unit: 'N', value: an.W });
+      return q;
+    },
+    moreTitle: 'More: net force and true weight',
+    solution(an) {
+      const g = fmt(an.g);
+      let h = '<section><h3>1. Choose a positive direction</h3><p>Take + as <b>up</b>. Accelerating upward (speeding up going up, or slowing down going down) means a is positive. Accelerating downward means a is negative.</p></section>';
+      h += '<section><h3>2. Forces on the person</h3><p>Only two forces act on the person: the weight W = mg pulling down and the scale’s normal force N pushing up. The scale reads N.</p>' +
+        '<div class="eq">ΣF = ma:   N − mg = ma\n   →   N = m(g + a)</div></section>';
+      let step = 3;
+      an.phases.forEach((ph) => {
+        let s = '<section><h3>' + step++ + '. ' + ph.label + '</h3>';
+        s += '<div class="eq">a = ' + fmt(ph.a) + ' m/s²\nN = ' + fmt(an.m) + ' × (' + g + signed(ph.a) + ') = ' + fmt(ph.N) + ' N\nA scale marked in kg shows N ÷ g = ' + fmt(ph.N) + ' / ' + g + ' = ' + fmt(ph.kg) + ' kg</div>';
+        if (Math.abs(ph.a) < 1e-9) s += '<p>No acceleration means no net force (Newton’s first law), so the scale reads the true weight even though the elevator is moving.</p>';
+        else if (ph.N < 1e-9) s += '<p>The person and the scale fall together, so the scale does not push at all. The person feels <b>weightless</b>, but their true weight is still ' + fmt(an.W) + ' N.</p>';
+        else if (ph.a > 0) s += '<p>The scale reads <b>more</b> than the true weight (' + fmt(an.W) + ' N): it has to push harder than gravity to accelerate the person upward.</p>';
+        else s += '<p>The scale reads <b>less</b> than the true weight (' + fmt(an.W) + ' N): gravity wins a little, so the person accelerates downward.</p>';
+        if (an.M > 0) s += '<div class="eq">Cable, treating car + person as one system (mass ' + fmt(an.M + an.m) + ' kg):\nT − (M + m)g = (M + m)a\nT = ' + fmt(an.M + an.m) + ' × (' + g + signed(ph.a) + ') = ' + fmt(ph.T) + ' N</div>';
+        h += s + '</section>';
+      });
+      return h;
+    },
+  };
+
+  /* ---------------- Human body ---------------- */
+  const HIP = 0.92; // hip height when standing (m), also the leg length
+  const BODY = {
+    defaults: () => ({
+      mode: 'jump',
+      m: 60,
+      jump: { d: 0.4, h: 0.5 },
+      land: { h: 1, d: 0.5 },
+      sprint: { v: 8, d: 10 },
+      traction: { m: 3, th1: 35, th2: 15 },
+      mystery: { on: false, target: '' },
+    }),
+    isStatic: () => cur().mode === 'traction',
+    solve(c) {
+      if (c.mode === 'traction') {
+        const an = P.solveTraction({ m: c.traction.m, th1: c.traction.th1, th2: c.traction.th2, g: state.g });
+        an.bodies = [{ name: 'Hanging weight', m: c.traction.m, kind: 'hanging', a: 0 }];
+        an.atRest = true;
+        return an;
+      }
+      const p = c[c.mode];
+      const an = P.solveBody({ mode: c.mode, m: c.m, g: state.g, d: p.d, h: p.h, v: p.v });
+      an.bodies = [{ name: 'Person', m: c.m, kind: 'person', a: 0 }];
+      an.atRest = false;
+      return an;
+    },
+    controls(c) {
+      let h = '<div class="group"><h2>Problem</h2>' + selectField('Type of problem', 'sel-body-mode', 'mode', BODY_MODES, c.mode, true) + '</div>';
+      if (c.mode === 'traction') {
+        h += '<div class="group"><h2>Traction setup</h2>' +
+          numField('Hanging mass', 'traction.m', c.traction.m, 'kg', { min: 0.1, max: 30, step: 0.1 }) +
+          numField('Upper rope angle θ₁ (above horizontal)', 'traction.th1', c.traction.th1, '°', { min: 0, max: 60, step: 1 }) +
+          numField('Lower rope angle θ₂ (below horizontal)', 'traction.th2', c.traction.th2, '°', { min: 0, max: 60, step: 1 }) +
+          '<p class="note">One rope runs from an anchor on the frame, around the pulley on the foot, over a pulley at the top, and down to the hanging weight. With massless, frictionless pulleys the tension is the same everywhere.</p></div>';
+        return h;
+      }
+      h += '<div class="group"><h2>Person</h2>' + numField('Mass', 'm', c.m, 'kg', { min: 10, max: 200, step: 1 }) + '</div>';
+      if (c.mode === 'jump') {
+        h += '<div class="group"><h2>The jump</h2>' +
+          numField('Push-off distance d (hips rise while feet push)', 'jump.d', c.jump.d, 'm', { min: 0.05, max: 0.7, step: 0.01 }) +
+          numField('Jump height h (rise after leaving the floor)', 'jump.h', c.jump.h, 'm', { min: 0.05, max: 2, step: 0.01 }) +
+          '<p class="note">The person starts crouched and pushes off with a constant force.</p></div>';
+      } else if (c.mode === 'land') {
+        h += '<div class="group"><h2>The landing</h2>' +
+          numField('Drop height h', 'land.h', c.land.h, 'm', { min: 0.1, max: 5, step: 0.05 }) +
+          numField('Stopping distance d (knees bend)', 'land.d', c.land.d, 'm', { min: 0.01, max: 0.7, step: 0.01 }) +
+          '<p class="note">Try a stiff-legged landing with d = 0.02 m and compare the force.</p></div>';
+      } else {
+        h += '<div class="group"><h2>The start</h2>' +
+          numField('Top speed v', 'sprint.v', c.sprint.v, 'm/s', { min: 1, max: 12, step: 0.1 }) +
+          numField('Distance to reach it, d', 'sprint.d', c.sprint.d, 'm', { min: 1, max: 60, step: 0.5 }) +
+          '<p class="note">The runner speeds up at a constant rate. Static friction from the track pushes the runner forward.</p></div>';
+      }
+      return h;
+    },
+    randomize(c, r) {
+      c.m = r(45, 95, 1);
+      c.jump = { d: r(0.25, 0.5, 0.01), h: r(0.2, 0.7, 0.01) };
+      c.land = { h: r(0.4, 2, 0.05), d: r(0.1, 0.6, 0.01) };
+      c.sprint = { v: r(5, 10, 0.1), d: r(5, 30, 0.5) };
+      c.traction = { m: r(1, 6, 0.1), th1: r(10, 50, 1), th2: r(0, 40, 1) };
+    },
+    load(c, num) {
+      const d = BODY.defaults();
+      const j = c.jump || {};
+      const l = c.land || {};
+      const s = c.sprint || {};
+      const t = c.traction || {};
+      return {
+        mode: BODY_MODES.some((x) => x[0] === c.mode) ? c.mode : d.mode,
+        m: num(c.m, d.m, 10, 200),
+        jump: { d: num(j.d, d.jump.d, 0.05, 0.7), h: num(j.h, d.jump.h, 0.05, 2) },
+        land: { h: num(l.h, d.land.h, 0.1, 5), d: num(l.d, d.land.d, 0.01, 0.7) },
+        sprint: { v: num(s.v, d.sprint.v, 1, 12), d: num(s.d, d.sprint.d, 1, 60) },
+        traction: { m: num(t.m, d.traction.m, 0.1, 30), th1: num(t.th1, d.traction.th1, 0, 60), th2: num(t.th2, d.traction.th2, 0, 60) },
+        mystery: d.mystery,
+      };
+    },
+    // hip height (or position along the track), velocity, acceleration and ground force at time t
+    state(an, t) {
+      if (an.mode === 'jump') {
+        if (t <= an.tPush) return { y: HIP - an.d + 0.5 * an.a * t * t, v: an.a * t, a: an.a, F: an.F, contact: true, phase: 'Pushing off' };
+        const tau = t - an.tPush;
+        return { y: HIP + an.v * tau - 0.5 * an.g * tau * tau, v: an.v - an.g * tau, a: -an.g, F: 0, contact: false, phase: tau < an.tUp ? 'Rising' : 'Falling back' };
+      }
+      if (an.mode === 'land') {
+        if (t <= an.tFall) return { y: HIP + an.h - 0.5 * an.g * t * t, v: -an.g * t, a: -an.g, F: 0, contact: false, phase: 'Falling' };
+        const tau = Math.min(t - an.tFall, an.tStop);
+        return { y: HIP - (an.v * tau - 0.5 * an.a * tau * tau), v: -an.v + an.a * tau, a: an.a, F: an.F, contact: true, phase: 'Stopping' };
+      }
+      const tt = Math.min(t, an.t);
+      return { y: 0.5 * an.a * tt * tt + (t > an.t ? an.v * (t - an.t) : 0), v: t <= an.t ? an.a * t : an.v, a: t <= an.t ? an.a : 0, F: t <= an.t ? an.f : 0, contact: true, phase: 'Speeding up' };
+    },
+    buildSim(an) {
+      if (an.kind === 'traction') return { kind: 'traction', tStop: 0, reason: null, static: true };
+      const tStop = an.mode === 'jump' ? an.tPush + 2 * an.tUp : an.mode === 'land' ? an.tFall + an.tStop : an.t;
+      const reason = an.mode === 'jump' ? 'The person landed back on the floor' : an.mode === 'land' ? 'The person has stopped' : 'The runner reached top speed';
+      return { kind: 'body', tStop, reason };
+    },
+    motion(an, t) {
+      if (an.kind === 'traction') return { s: 0, v: 0, a: 0 };
+      const st = BODY.state(an, t);
+      const y0 = BODY.state(an, 0).y;
+      return { s: st.y - y0, v: st.v, a: st.a };
+    },
+    graphNames: () => (cur().mode === 'sprint' ? { x: 'Position–time', v: 'Velocity–time', a: 'Ground force–time' } : { x: 'Height–time', v: 'Velocity–time', a: 'Floor force–time' }),
+    graphValue(an, which, t) {
+      const st = BODY.state(an, t);
+      return which === 'x' ? st.y : which === 'v' ? st.v : st.F;
+    },
+    graphLabel: () =>
+      cur().mode === 'sprint'
+        ? { x: 'position (m)', v: 'velocity (m/s)', a: 'forward force from ground (N)' }
+        : { x: 'hip height (m)', v: 'velocity (m/s)', a: 'force from the floor (N)' },
+    draw(ctx, W, H, t) {
+      const an = analysis;
+      if (an.kind === 'traction') return BODY.drawTraction(ctx, W, H);
+      if (an.mode === 'sprint') return BODY.drawSprint(ctx, W, H, t);
+      const st = BODY.state(an, t);
+      const top = an.mode === 'jump' ? HIP + an.h + 0.9 : HIP + an.h + 0.9;
+      const view = fitView({ x0: -1.9, x1: 1.9, y0: -0.15, y1: Math.max(2.2, top + 0.2) }, W, H);
+      const P = view.P;
+      drawGrid(ctx, W, H, view);
+      drawFloor(ctx, view, -1.9, 1.9);
+      // meter stick
+      ctx.save();
+      ctx.strokeStyle = C.muted;
+      ctx.lineWidth = 1;
+      const maxH = Math.floor(Math.max(2, top) * 10);
+      for (let i = 0; i <= maxH; i++) {
+        const [mx, my] = P(-1.5, i * 0.1);
+        const len = i % 10 === 0 ? 10 : i % 5 === 0 ? 7 : 4;
+        ctx.beginPath();
+        ctx.moveTo(mx, my);
+        ctx.lineTo(mx + len, my);
+        ctx.stroke();
+        if (i % 5 === 0 && view.k > 40) labelText(ctx, (i / 10).toFixed(1), mx - 6, my, C.muted, 'right', 12, 400);
+      }
+      ctx.restore();
+      if (an.mode === 'land') {
+        // the ledge the person steps off
+        const [lx0, ly0] = P(-1.2, an.h);
+        const [lx1, ly1] = P(-0.35, 0);
+        ctx.save();
+        ctx.fillStyle = C.bench;
+        ctx.strokeStyle = C['bench-edge'];
+        ctx.fillRect(lx0, ly0, lx1 - lx0, ly1 - ly0);
+        ctx.strokeRect(lx0, ly0, lx1 - lx0, ly1 - ly0);
+        ctx.restore();
+      }
+      for (const ts of strobeTimes(t)) {
+        const g0 = BODY.state(an, ts);
+        const [gx, gy] = P(0.15, g0.y);
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.fillStyle = C.ink;
+        ctx.beginPath();
+        ctx.arc(gx, gy, 3, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.restore();
+      }
+      drawPerson(ctx, view, 0.15, st.y, { yFoot: st.contact ? 0 : st.y - HIP, arms: st.contact ? 'down' : 'up', label: trimNum(an.m) + ' kg' });
+      // hip marker
+      const [hx, hy] = P(0.15, st.y);
+      ctx.save();
+      ctx.fillStyle = C.accent;
+      ctx.beginPath();
+      ctx.arc(hx, hy, 4, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.restore();
+      // floor force arrow while in contact
+      if (st.F > 1e-9) {
+        const [fx, fy] = P(0.15, 0);
+        const len = Math.min(140, 30 + (st.F / an.W) * 18);
+        arrow(ctx, fx + 40, fy, fx + 40, fy - len, C['f-n'], 4, 13);
+        labelText(ctx, 'F_floor', fx + 52, fy - len * 0.6, C['f-n'], 'left', 15);
+      }
+      labelText(ctx, st.phase, 12, 18, C.ink, 'left', 15, 700, C.fontBody);
+    },
+    drawSprint(ctx, W, H, t) {
+      const an = analysis;
+      const st = BODY.state(an, t);
+      const view = fitView({ x0: st.y - 3.2, x1: st.y + 3.2, y0: -0.4, y1: 2.4 }, W, H);
+      const P = view.P;
+      drawGrid(ctx, W, H, view);
+      drawFloor(ctx, view, st.y - 4, st.y + 4);
+      // distance marks
+      for (let x = Math.floor(st.y - 4); x <= st.y + 4; x++) {
+        if (x < 0 || x > an.d + 2) continue;
+        const [mx, my] = P(x, 0);
+        ctx.save();
+        ctx.strokeStyle = C.muted;
+        ctx.beginPath();
+        ctx.moveTo(mx, my);
+        ctx.lineTo(mx, my - (x % 5 === 0 ? 12 : 6));
+        ctx.stroke();
+        ctx.restore();
+        if (x % 5 === 0 || x === an.d) labelText(ctx, x + ' m', mx, my + 16, C.muted, 'center', 12, 400);
+      }
+      for (const [x, txt] of [[0, 'Start'], [an.d, 'Top speed']]) {
+        const [lx, ly] = P(x, 0);
+        const [, ly2] = P(x, 2.0);
+        ctx.save();
+        ctx.strokeStyle = C.accent;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.moveTo(lx, ly);
+        ctx.lineTo(lx, ly2);
+        ctx.stroke();
+        ctx.restore();
+        labelText(ctx, txt, lx, ly2 - 10, C.accent, 'center', 13, 700, C.fontBody);
+      }
+      const swing = Math.sin(st.y * 4) * Math.min(1, st.v / 3);
+      drawPerson(ctx, view, st.y, HIP, { yFoot: 0, swing, lean: 0.12 * Math.min(1, st.a / 3 + 0.2), label: trimNum(an.m) + ' kg' });
+      if (st.F > 1e-9) {
+        const [fx, fy] = P(st.y, 0);
+        arrow(ctx, fx - 10, fy - 4, fx + 55, fy - 4, C['f-f'], 4, 13);
+        labelText(ctx, 'f (ground pushes forward)', fx + 60, fy - 18, C['f-f'], 'left', 14);
+      }
+      labelText(ctx, st.phase === 'Speeding up' && t <= an.t ? 'Speeding up' : 'At top speed', 12, 18, C.ink, 'left', 15, 700, C.fontBody);
+    },
+    drawTraction(ctx, W, H) {
+      const an = analysis;
+      const a1 = an.th1 * DEG;
+      const a2 = an.th2 * DEG;
+      const Py = 1.7;
+      const Px = 0.3;
+      const Xf = Px + 1.7;
+      const U = { x: Xf, y: Py + (Xf - Px) * Math.tan(a1) };
+      const Lw = { x: Xf, y: Py - (Xf - Px) * Math.tan(a2) };
+      const view = fitView({ x0: -2.9, x1: Xf + 0.9, y0: -0.15, y1: Math.max(U.y + 0.4, 2.6) }, W, H);
+      const P = view.P;
+      drawGrid(ctx, W, H, view);
+      drawFloor(ctx, view, -2.9, Xf + 0.9);
+      const rect = (x0, y0, x1, y1, fill) => {
+        const [a, b] = P(x0, y1);
+        const [c2, d2] = P(x1, y0);
+        ctx.save();
+        ctx.fillStyle = fill;
+        ctx.strokeStyle = C['bench-edge'];
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(a, b, c2 - a, d2 - b);
+        ctx.strokeRect(a, b, c2 - a, d2 - b);
+        ctx.restore();
+      };
+      // bed and frame
+      rect(-2.7, 1.35, 0.1, 1.5, C.bench);
+      rect(-2.6, 0, -2.5, 1.35, C.bench);
+      rect(-0.05, 0, 0.05, 1.35, C.bench);
+      rect(Xf + 0.05, 0, Xf + 0.15, Math.max(U.y, 1.8) + 0.25, C.bench);
+      // patient lying on the bed, leg raised to the foot pulley
+      ctx.save();
+      ctx.strokeStyle = C.ink;
+      ctx.lineCap = 'round';
+      ctx.lineWidth = Math.max(6, view.k * 0.14);
+      const seg = (a, b) => {
+        const [x1, y1] = P(a[0], a[1]);
+        const [x2, y2] = P(b[0], b[1]);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      };
+      seg([-2.3, 1.62], [-1.2, 1.62]);
+      seg([-1.2, 1.62], [-0.5, 1.68]);
+      seg([-0.5, 1.68], [0.1, 1.7]);
+      ctx.lineWidth = 2;
+      const [hx, hy] = P(-2.5, 1.68);
+      ctx.fillStyle = bodyColor(0);
+      ctx.beginPath();
+      ctx.arc(hx, hy, 0.13 * view.k, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+      // ropes
+      ctx.save();
+      ctx.strokeStyle = C.ink;
+      ctx.lineWidth = 2;
+      const [px, py] = P(Px, Py);
+      const [ux, uy] = P(U.x, U.y);
+      const [lx, ly] = P(Lw.x, Lw.y);
+      ctx.beginPath();
+      ctx.moveTo(lx, ly);
+      ctx.lineTo(px, py);
+      ctx.lineTo(ux, uy);
+      const rp = 0.08 * view.k;
+      ctx.lineTo(ux + rp, uy);
+      const [, wy] = P(0, Math.max(0.35, U.y - 1.1));
+      ctx.lineTo(ux + rp, wy);
+      ctx.stroke();
+      // pulleys and anchor
+      for (const [x, y] of [[px, py], [ux, uy]]) {
+        ctx.fillStyle = C.panel;
+        ctx.beginPath();
+        ctx.arc(x, y, rp, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.fillStyle = C['bench-edge'];
+      ctx.fillRect(lx - 5, ly - 5, 10, 10);
+      // hanging weight
+      const wb = 0.28 * view.k;
+      ctx.fillStyle = bodyColor(1);
+      ctx.fillRect(ux + rp - wb / 2, wy, wb, wb);
+      ctx.strokeRect(ux + rp - wb / 2, wy, wb, wb);
+      ctx.restore();
+      labelText(ctx, trimNum(an.m) + ' kg', ux + rp + wb / 2 + 8, wy + wb / 2, C.ink, 'left', 14);
+      // angles
+      ctx.save();
+      ctx.strokeStyle = C.muted;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px + 0.75 * view.k, py);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const rr = 0.45 * view.k;
+      ctx.beginPath();
+      ctx.arc(px, py, rr, -a1, 0);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(px, py, rr * 0.8, 0, a2);
+      ctx.stroke();
+      ctx.restore();
+      // angle labels sit to the left of the pulley, clear of the vectors
+      labelText(ctx, 'θ₁ = ' + trimNum(an.th1) + '°', px - 14, py - 24, C.ink, 'right', 14);
+      labelText(ctx, 'θ₂ = ' + trimNum(an.th2) + '°', px - 14, py + 26, C.ink, 'right', 14);
+      // force vectors on the foot pulley
+      const sc = (1.05 * view.k) / Math.max(an.F, 1e-9);
+      const tip = (fx, fy) => [px + fx * sc, py - fy * sc];
+      const [t1x, t1y] = tip(an.T * Math.cos(a1), an.T * Math.sin(a1));
+      const [t2x, t2y] = tip(an.T * Math.cos(a2), -an.T * Math.sin(a2));
+      arrow(ctx, px, py, t1x, t1y, C.l1, 3, 11);
+      arrow(ctx, px, py, t2x, t2y, C.l1, 3, 11);
+      labelText(ctx, 'T', t1x + 6, t1y - 10, C.l1, 'left', 15);
+      labelText(ctx, 'T', t2x + 6, t2y + 12, C.l1, 'left', 15);
+      const [rx, ry] = tip(an.Fx, an.Fy);
+      arrow(ctx, px, py, rx, ry, C['f-a'], 4.5, 14);
+      labelText(ctx, 'F', rx + 8, ry + (an.Fy >= 0 ? -10 : 10), C['f-a'], 'left', 17);
+      labelText(ctx, 'At rest: an equilibrium problem', 12, 18, C.ink, 'left', 15, 700, C.fontBody);
+    },
+    forceSets(an) {
+      if (an.kind === 'traction') {
+        const d = (deg) => ({ x: Math.cos(deg * DEG), y: Math.sin(deg * DEG) });
+        return [
+          {
+            body: { name: 'Foot and pulley', m: null, kind: 'hanging' },
+            idx: 2,
+            tilt: 0,
+            arrows: [
+              { dir: d(an.th1), mag: an.T, color: C.l1, label: 'T' },
+              { dir: d(-an.th2), mag: an.T, color: C.l1, label: 'T' },
+              { dir: d(an.angle + 180), mag: an.F, color: C['f-n'], label: 'F_leg' },
+            ],
+          },
+          {
+            body: an.bodies[0],
+            idx: 1,
+            tilt: 0,
+            arrows: [
+              { dir: { x: 0, y: 1 }, mag: an.T, color: C.l1, label: 'T' },
+              { dir: { x: 0, y: -1 }, mag: an.m * an.g, color: C['f-w'], label: 'W' },
+            ],
+          },
+        ];
+      }
+      const person = an.bodies[0];
+      if (an.mode === 'sprint') {
+        return [{
+          body: { name: 'Runner, speeding up', m: an.m, kind: 'person' },
+          idx: 0,
+          tilt: 0,
+          arrows: [
+            { dir: { x: 0, y: -1 }, mag: an.W, color: C['f-w'], label: 'W' },
+            { dir: { x: 0, y: 1 }, mag: an.N, color: C['f-n'], label: 'N' },
+            { dir: { x: 1, y: 0 }, mag: an.f, color: C['f-f'], label: 'fₛ' },
+          ],
+        }];
+      }
+      const contact = { dir: { x: 0, y: 1 }, mag: an.F, color: C['f-n'], label: 'F_floor' };
+      const W = { dir: { x: 0, y: -1 }, mag: an.W, color: C['f-w'], label: 'W' };
+      const a = [{ body: { name: an.mode === 'jump' ? 'Pushing off' : 'Falling', m: person.m, kind: 'person' }, idx: 0, tilt: 0, arrows: an.mode === 'jump' ? [W, contact] : [W] }];
+      a.push({ body: { name: an.mode === 'jump' ? 'In the air' : 'Stopping', m: person.m, kind: 'person' }, idx: 0, tilt: 0, arrows: an.mode === 'jump' ? [W] : [W, contact] });
+      return a;
+    },
+    fbdCaption(an) {
+      if (an.kind === 'traction') return 'The foot and its pulley are at rest, so the leg must pull back with a force equal and opposite to the two rope tensions combined.';
+      if (an.mode === 'sprint') return 'While the runner speeds up. Once at top speed, f drops to about zero.';
+      return 'The same person at two moments. Only the weight acts while the person is off the floor.';
+    },
+    legend(an, showV) {
+      const chip = (color, text) => '<span><i style="background:' + color + '"></i>' + text + '</span>';
+      const v = (x) => (showV ? ' (' + fmt(x) + ' N)' : '');
+      if (an.kind === 'traction') {
+        return {
+          legend: chip('var(--l1)', 'T: rope tension') + chip('var(--f-a)', 'F: traction force on the leg') + chip('var(--f-n)', 'F_leg: the leg pulls back on the pulley') + chip('var(--f-w)', 'W: weight'),
+          pairs: '<h3>Action–reaction pairs</h3><ul>' +
+            '<li>The pulley pulls the foot with the traction force F' + v(an.F) + ', and the foot pulls back on the pulley with <b>F_leg</b>, equal and opposite. That is a <b>third-law pair</b>.</li>' +
+            '<li>The rope pulls on each pulley and each pulley pulls back on the rope. Because the rope and pulleys are massless and frictionless, the tension is T = mg everywhere' + v(an.T) + '.</li>' +
+            '<li>Two rope segments pull on the foot pulley, so the traction force can be <b>bigger</b> than the hanging weight.</li></ul>',
+        };
+      }
+      if (an.mode === 'sprint') {
+        return {
+          legend: chip('var(--f-w)', 'W: weight') + chip('var(--f-n)', 'N: normal force') + chip('var(--f-f)', 'fₛ: static friction from the track'),
+          pairs: '<h3>Action–reaction pairs</h3><ul>' +
+            '<li>The runner’s foot pushes <b>backward</b> on the track, and the track pushes the runner <b>forward</b> with friction fₛ' + v(an.f) + '. That forward push is the only horizontal force, so it is what accelerates the runner.</li>' +
+            '<li>The friction is static because the foot does not slide while it pushes.</li>' +
+            '<li>N and W act on the runner, so they are not a pair with each other. The track pushes up with N; the runner pushes down on the track just as hard.</li></ul>',
+        };
+      }
+      return {
+        legend: chip('var(--f-w)', 'W: weight') + chip('var(--f-n)', 'F_floor: the floor pushes up on the person'),
+        pairs: '<h3>Action–reaction pairs</h3><ul>' +
+          '<li>The floor pushes up on the person with F_floor' + v(an.F) + ', and the person pushes down on the floor just as hard. That is a <b>third-law pair</b>.</li>' +
+          '<li>F_floor is bigger than W while the person ' + (an.mode === 'jump' ? 'speeds up upward' : 'slows to a stop') + '. The difference is the net force: F_floor − W = ma.</li>' +
+          (an.mode === 'land' ? '<li>A smaller stopping distance d means a bigger deceleration and a bigger force on the legs. That is why bending your knees protects your joints.</li>' : '') +
+          '<li>In the air, the only force is W, so the person accelerates downward at g.</li></ul>',
+      };
+    },
+    quantities(an) {
+      const q = [];
+      const row = (key, label, unit, value, sub) => q.push({ key, group: 'main', label, unit, value, sub });
+      if (an.kind === 'traction') {
+        row('T', 'Tension in the rope', 'N', an.T);
+        row('Fx', 'Horizontal part of the traction force', 'N', Math.abs(an.Fx));
+        row('Fy', 'Vertical part of the traction force', 'N', Math.abs(an.Fy), 'up if θ₁ > θ₂, down if θ₂ > θ₁');
+        row('F', 'Size of the traction force on the leg', 'N', an.F);
+        row('ang', 'Direction of the traction force', '°', Math.abs(an.angle), 'angle from the horizontal');
+        return q;
+      }
+      if (an.mode === 'sprint') {
+        row('a', 'Acceleration of the runner', 'm/s²', an.a);
+        row('t', 'Time to reach top speed', 's', an.t);
+        row('f', 'Forward force from the track (friction)', 'N', an.f);
+        row('Fg', 'Total force from the track', 'N', an.Fground, 'combine f and N');
+        q.push({ key: 'ratio', group: 'more', label: 'Friction as a fraction of body weight', unit: '× W', value: an.ratio });
+        q.push({ key: 'W', group: 'more', label: 'Weight of the runner', unit: 'N', value: an.W });
+        return q;
+      }
+      if (an.mode === 'jump') {
+        row('v', 'Takeoff speed', 'm/s', an.v);
+        row('a', 'Acceleration while pushing off', 'm/s²', an.a);
+        row('F', 'Force from the floor while pushing off', 'N', an.F);
+        row('ratio', 'Floor force in body weights', '× W', an.ratio);
+        q.push({ key: 't', group: 'more', label: 'Time spent pushing off', unit: 's', value: an.tPush });
+      } else {
+        row('v', 'Speed just as the feet touch', 'm/s', an.v);
+        row('a', 'Deceleration while stopping', 'm/s²', an.a);
+        row('F', 'Force from the floor while stopping', 'N', an.F);
+        row('ratio', 'Floor force in body weights', '× W', an.ratio);
+        q.push({ key: 't', group: 'more', label: 'Time to stop', unit: 's', value: an.tStop });
+      }
+      q.push({ key: 'W', group: 'more', label: 'Weight of the person', unit: 'N', value: an.W });
+      q.push({ key: 'net', group: 'more', label: 'Net force while ' + (an.mode === 'jump' ? 'pushing off' : 'stopping'), unit: 'N', value: an.m * an.a });
+      return q;
+    },
+    moreTitle: 'More',
+    solution(an) {
+      const g = fmt(an.g);
+      if (an.kind === 'traction') {
+        return '<section><h3>1. Tension</h3><p>The rope holds the hanging weight still, and massless, frictionless pulleys don’t change the tension, so it is the same in every segment.</p>' +
+          '<div class="eq">T = mg = ' + fmt(an.m) + ' × ' + g + ' = ' + fmt(an.T) + ' N</div></section>' +
+          '<section><h3>2. Add the two rope forces on the foot pulley</h3><p>Take x to the right (away from the body) and y up. One segment pulls at θ₁ = ' + trimNum(an.th1) + '° above the horizontal, the other at θ₂ = ' + trimNum(an.th2) + '° below it.</p>' +
+          '<div class="eq">Fx = T cos θ₁ + T cos θ₂ = ' + fmt(an.T) + ' × (' + fmt(Math.cos(an.th1 * DEG), 3) + ' + ' + fmt(Math.cos(an.th2 * DEG), 3) + ') = ' + fmt(an.Fx) + ' N\n' +
+          'Fy = T sin θ₁ − T sin θ₂ = ' + fmt(an.T) + ' × (' + fmt(Math.sin(an.th1 * DEG), 3) + ' − ' + fmt(Math.sin(an.th2 * DEG), 3) + ') = ' + fmt(an.Fy) + ' N</div></section>' +
+          '<section><h3>3. Size and direction</h3><div class="eq">F = √(Fx² + Fy²) = √(' + fmt(an.Fx) + '² + ' + fmt(an.Fy) + '²) = ' + fmt(an.F) + ' N\n' +
+          'angle = tan⁻¹(Fy / Fx) = ' + fmt(an.angle, 1) + '° ' + (an.angle >= 0 ? 'above' : 'below') + ' the horizontal</div>' +
+          '<p>The leg is at rest, so the body (through the leg) pulls back on the pulley with an equal and opposite force: Newton’s first and third laws together.</p></section>';
+      }
+      if (an.mode === 'sprint') {
+        return '<section><h3>1. Acceleration from kinematics</h3><p>Starting from rest and reaching v = ' + fmt(an.v) + ' m/s in d = ' + fmt(an.d) + ' m:</p>' +
+          '<div class="eq">v² = 2ad   →   a = v² / (2d) = ' + fmt(an.v) + '² / (2 × ' + fmt(an.d) + ') = ' + fmt(an.a) + ' m/s²\nt = v / a = ' + fmt(an.t) + ' s</div></section>' +
+          '<section><h3>2. Horizontal force from Newton’s second law</h3><p>The only horizontal force on the runner is static friction from the track.</p>' +
+          '<div class="eq">f = ma = ' + fmt(an.m) + ' × ' + fmt(an.a) + ' = ' + fmt(an.f) + ' N   (' + fmt(an.ratio) + ' × body weight)</div></section>' +
+          '<section><h3>3. Total force from the track</h3><p>Vertically nothing accelerates, so N = W = mg = ' + fmt(an.W) + ' N. The track’s total push combines both parts:</p>' +
+          '<div class="eq">F = √(f² + N²) = √(' + fmt(an.f) + '² + ' + fmt(an.N) + '²) = ' + fmt(an.Fground) + ' N, at ' + fmt(an.groundAngle, 1) + '° above the horizontal</div></section>';
+      }
+      const jump = an.mode === 'jump';
+      let h = '<section><h3>1. Speed from kinematics</h3>';
+      h += jump
+        ? '<p>After the feet leave the floor, only gravity acts. Rising h = ' + fmt(an.h) + ' m and stopping at the top means:</p><div class="eq">v² = 2gh   →   v = √(2 × ' + g + ' × ' + fmt(an.h) + ') = ' + fmt(an.v) + ' m/s</div></section>'
+        : '<p>Falling from rest through h = ' + fmt(an.h) + ' m:</p><div class="eq">v² = 2gh   →   v = √(2 × ' + g + ' × ' + fmt(an.h) + ') = ' + fmt(an.v) + ' m/s</div></section>';
+      h += '<section><h3>2. Acceleration while ' + (jump ? 'pushing off' : 'stopping') + '</h3><p>' + (jump ? 'The hips rise d = ' + fmt(an.d) + ' m while the legs push, going from rest to ' + fmt(an.v) + ' m/s:' : 'The knees bend through d = ' + fmt(an.d) + ' m, taking the speed from ' + fmt(an.v) + ' m/s to zero:') + '</p>' +
+        '<div class="eq">a = v² / (2d) = ' + fmt(an.v) + '² / (2 × ' + fmt(an.d) + ') = ' + fmt(an.a) + ' m/s²   (upward)</div></section>';
+      h += '<section><h3>3. Force from the floor</h3><p>Take + as up. Two forces act: the floor pushes up with F_floor and gravity pulls down with W.</p>' +
+        '<div class="eq">F_floor − mg = ma\nF_floor = m(g + a) = ' + fmt(an.m) + ' × (' + g + ' + ' + fmt(an.a) + ') = ' + fmt(an.F) + ' N\n' +
+        'In body weights: F_floor / W = ' + fmt(an.F) + ' / ' + fmt(an.W) + ' = ' + fmt(an.ratio) + '</div>' +
+        (jump ? '' : '<p>Since a = gh/d, this is F_floor = mg(1 + h/d). Halving the stopping distance roughly doubles the force on the legs.</p>') + '</section>';
+      return h;
+    },
+  };
+
+  const XS = { elevator: ELEV, body: BODY, traction: BODY };
+  const xsFor = (an) => (an && XS[an.kind]) || null;
+  const scenarioModule = () => ({ elevator: ELEV, body: BODY })[state.scenario] || null;
+
+  /* ======================================================================
    * Readouts, status and animation
    * ==================================================================== */
 
@@ -2207,18 +3148,31 @@
     }
     vals.parentElement.title = locked ? 'Hidden in mystery-mass mode until you choose Show answers' : '';
     const launching = !!(sim && sim.geom && sim.geom.flight);
-    const names = launching ? { x: 'x–t (horizontal)', v: 'vₓ–t', a: 'v_y–t' } : { x: 'Position–time', v: 'Velocity–time', a: 'Acceleration–time' };
+    const xs = xsFor(analysis);
+    const xsNames = xs ? (typeof xs.graphNames === 'function' ? xs.graphNames() : xs.graphNames) : null;
+    const names = xsNames || (launching ? { x: 'x–t (horizontal)', v: 'vₓ–t', a: 'v_y–t' } : { x: 'Position–time', v: 'Velocity–time', a: 'Acceleration–time' });
+    const hideA = locked && !launching && !xs;
     document.querySelectorAll('[data-graph]').forEach((b) => {
       b.textContent = names[b.dataset.graph];
-      b.hidden = b.dataset.graph === 'a' && locked && !launching;
+      b.hidden = b.dataset.graph === 'a' && hideA;
     });
-    if (ui.graph === 'a' && locked && !launching) {
+    // an equilibrium problem has no motion to graph
+    const isStatic = !!(sim && sim.static);
+    $('tab-graph').hidden = isStatic;
+    if (isStatic && ui.tab === 'graph') showTab('check');
+    $('fbd-caption').textContent = xs && xs.fbdCaption && analysis.ok ? xs.fbdCaption(analysis, anim.t) : '';
+    $('fbd-caption').hidden = !$('fbd-caption').textContent;
+    if (ui.graph === 'a' && hideA) {
       ui.graph = 'x';
       document.querySelectorAll('[data-graph]').forEach((x) => x.classList.toggle('on', x.dataset.graph === 'x'));
     }
     $('graph-hint').textContent = launching
       ? 'Press Play to draw the graph. On the ramp the block speeds up; in the air vₓ stays constant while v_y grows at g.'
-      : 'Press Play to draw the graph for the tracked object. The slope of the velocity–time graph is the acceleration.';
+      : state.scenario === 'elevator'
+        ? 'Press Play to draw the graph. Watch the scale reading jump above or below the true weight whenever the elevator accelerates.'
+        : state.scenario === 'body'
+          ? 'Press Play to draw the graph. The force graph shows how big the push is and how briefly it lasts.'
+          : 'Press Play to draw the graph for the tracked object. The slope of the velocity–time graph is the acceleration.';
   }
 
   function renderScenarioTabs() {
@@ -2237,6 +3191,7 @@
 
   function plusWord() {
     if (!analysis.ok) return '';
+    if (xsFor(analysis)) return state.scenario === 'body' && cur().mode === 'sprint' ? '+ = forward' : '+ = up';
     const b = analysis.bodies[ui.track];
     if (analysis.kind === 'atwood') return ui.track === 0 ? '+ = up' : '+ = down';
     if (b.kind === 'hanging') return '+ = down';
@@ -2276,6 +3231,10 @@
       return;
     }
     const pw = plusWord();
+    if (sim && sim.static) {
+      st.textContent = 'This is an equilibrium problem: the leg and the weight stay at rest. Use the diagrams and Predict & check.';
+      return;
+    }
     if (anim.t === 0 && !anim.playing) {
       st.textContent = 'Ready. Press Play to release the system from rest. Readouts use ' + pw + ' for the tracked object.';
       return;
@@ -2302,7 +3261,7 @@
 
   function updatePlayButton() {
     const b = $('btn-play');
-    b.disabled = !analysis.ok;
+    b.disabled = !analysis.ok || !!(sim && sim.static);
     b.textContent = anim.playing ? 'Pause' : anim.done ? 'Replay' : anim.t > 0 ? 'Resume' : 'Play';
   }
 
@@ -2328,6 +3287,11 @@
     drawScene();
     updateReadouts();
     drawGraph();
+    // elevator forces change from stage to stage, so keep the diagrams live
+    if (state.scenario === 'elevator' && ui.tab === 'fbd') {
+      drawFBD();
+      $('fbd-caption').textContent = ELEV.fbdCaption(analysis, anim.t);
+    }
     if (anim.playing) requestAnimationFrame(frame);
   }
 
@@ -2370,6 +3334,7 @@
   }
 
   function init() {
+    state = defaults();
     loadFromHash();
     readColors();
 

@@ -12,6 +12,8 @@ It is a static web page: plain HTML, CSS and JavaScript, with no build step and 
 | **Modified Atwood** | 1–3 blocks on a table, tied by a string over a pulley at the edge to a hanging block. |
 | **Inclined plane** | 1–3 blocks on a ramp at any angle (0–85°). The low end faces right. Optional hanging block over a pulley at the top, or a launch off the table at the bottom as a projectile. |
 | **Blocks on a surface** | 1–4 blocks on a level surface, optionally with a string from the first block to the last. |
+| **Elevator** | A person on a scale in an elevator: speeding up, slowing down or at constant speed (up or down), a full ride, or free fall. Optional cable tension with the car's mass. |
+| **Human body** | OpenStax-style problems: a leg in traction (pulleys at two angles), jumping, landing from a height, and a sprint start. |
 
 On every surface you can:
 
