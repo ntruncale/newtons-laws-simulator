@@ -41,88 +41,78 @@
    * p = {
    *   theta: degrees (0 = level),
    *   g,
-   *   friction: bool,
+   *   friction: bool,                 // friction with the surface
    *   blocks: [{ m, mus, muk }],
    *   links: ['contact' | 'string' | 'none'],  // between neighbors; length blocks.length - 1
    *   longString: bool,               // a string from the first block to the last, over the ones between
    *   hanging: null | { m },          // hung over a pulley at the + end
-   *   applied: null | { F, angle, block } // angle: degrees from +s, + tilts away from the surface
+   *   stack: null | { base, m, mus, muk }, // a block resting on top of blocks[base]; mu is block-on-block
+   *   applied: null | { F, angle, block } // block: index, or 'top'; angle: degrees from +s, + tilts away from the surface
    * }
    */
   function buildChain(p) {
     const th = (p.theta || 0) * DEG;
     const g = p.g;
-    const bodies = p.blocks.map((b, i) => {
-      const W = b.m * g;
-      const Wpar = W * Math.sin(th);
-      const Wperp = W * Math.cos(th);
-      let Fpar = 0;
-      let Fperp = 0;
-      if (p.applied && p.applied.block === i && p.applied.F) {
-        Fpar = p.applied.F * Math.cos(p.applied.angle * DEG);
-        Fperp = p.applied.F * Math.sin(p.applied.angle * DEG);
-      }
+    const appliedOn = (key) => (p.applied && p.applied.block === key && p.applied.F ? p.applied : null);
+    const makeBody = (kind, i, name, m, mus, muk, ap) => {
+      const W = m * g;
+      const onSurface = kind !== 'hanging';
+      const Wpar = onSurface ? W * Math.sin(th) : 0;
+      const Wperp = onSurface ? W * Math.cos(th) : 0;
+      const Fpar = ap ? ap.F * Math.cos(ap.angle * DEG) : 0;
+      const Fperp = ap ? ap.F * Math.sin(ap.angle * DEG) : 0;
       return {
-        kind: 'block',
+        kind,
         index: i,
-        name: 'Block ' + (i + 1),
+        name,
         short: String(i + 1),
-        m: b.m,
+        m,
         W,
         Wpar,
         Wperp,
         Fpar,
         Fperp,
-        ext: -Wpar + Fpar, // net force along s, before friction and links
-        N: Wperp - Fperp,
-        mus: p.friction ? b.mus : 0,
-        muk: p.friction ? b.muk : 0,
+        ext: kind === 'hanging' ? W : -Wpar + Fpar, // net force along s, before friction and links
+        N: kind === 'hanging' ? 0 : Wperp - Fperp, // a base block gets the top block's push added below
+        mus,
+        muk,
       };
-    });
+    };
+    const bodies = p.blocks.map((b, i) =>
+      makeBody('block', i, 'Block ' + (i + 1), b.m, p.friction ? b.mus : 0, p.friction ? b.muk : 0, appliedOn(i))
+    );
+    const nb = bodies.length;
     const links = [];
     p.links.forEach((type, j) => {
       if (type === 'string' || type === 'contact') links.push({ type, hanging: false, long: false, left: j, right: j + 1 });
     });
-    if (p.longString && bodies.length >= 3) {
-      links.push({ type: 'string', hanging: false, long: true, left: 0, right: bodies.length - 1 });
+    if (p.longString && nb >= 3) {
+      links.push({ type: 'string', hanging: false, long: true, left: 0, right: nb - 1 });
     }
     if (p.hanging) {
       const i = bodies.length;
-      const W = p.hanging.m * g;
-      bodies.push({
-        kind: 'hanging',
-        index: i,
-        name: 'Block ' + (i + 1) + ' (hanging)',
-        short: String(i + 1),
-        m: p.hanging.m,
-        W,
-        Wpar: 0,
-        Wperp: 0,
-        Fpar: 0,
-        Fperp: 0,
-        ext: W,
-        N: 0,
-        mus: 0,
-        muk: 0,
-      });
-      links.push({ type: 'string', hanging: true, long: false, left: i - 1, right: i });
+      bodies.push(makeBody('hanging', i, 'Block ' + (i + 1) + ' (hanging)', p.hanging.m, 0, 0, null));
+      links.push({ type: 'string', hanging: true, long: false, left: nb - 1, right: i });
+    }
+    if (p.stack) {
+      const i = bodies.length;
+      const base = Math.min(Math.max(0, p.stack.base), nb - 1);
+      const top = makeBody('top', i, 'Block ' + (i + 1) + ' (on top)', p.stack.m, 0, 0, appliedOn('top'));
+      top.base = base;
+      bodies.push(top);
+      // The top block presses on its base block with the normal force it feels.
+      bodies[base].Ntop = top.N;
+      bodies[base].N += Math.max(0, top.N);
+      links.push({ type: 'stack', hanging: false, long: false, left: base, right: i, mus: p.stack.mus, muk: Math.min(p.stack.muk, p.stack.mus), N: Math.max(0, top.N) });
     }
     return { bodies, links, neighbors: p.links.slice(), theta: p.theta || 0, g, friction: !!p.friction };
   }
 
   // Sign of a link force on the body to its left / right.
   // A string pulls the two bodies together; a contact pushes them apart.
+  // For a stacked pair, F is the friction on the top block (+ along s); the base feels -F.
   function linkSigns(type) {
     return type === 'string' ? { left: 1, right: -1 } : { left: -1, right: 1 };
-  }
-
-  function popcount(x) {
-    let c = 0;
-    while (x) {
-      c += x & 1;
-      x >>= 1;
-    }
-    return c;
   }
 
   // Bodies reachable from `start` through engaged links, without crossing link `cut`.
@@ -143,11 +133,26 @@
     return [...seen].sort((x, y) => x - y);
   }
 
-  // Solve one guess of which links are "engaged" (taut string / touching blocks).
-  function tryPattern(model, mask) {
+  /*
+   * Solve one guess of each link's state:
+   *   'on'    string taut / blocks touching / stacked block sticking
+   *   'off'   string slack / blocks apart
+   *   1, -1   stacked block slipping forward (+s) or backward relative to its base
+   */
+  function tryPattern(model, states) {
     const { bodies, links } = model;
     const n = bodies.length;
-    const engaged = (j) => !!((mask >> j) & 1);
+    const engaged = (j) => states[j] === 'on';
+
+    // Kinetic friction between slipping stacked blocks acts like an outside force on each part.
+    const slip = new Array(n).fill(0);
+    links.forEach((l, j) => {
+      if (l.type !== 'stack' || engaged(j)) return;
+      const d = states[j];
+      slip[l.right] += -d * l.muk * l.N;
+      slip[l.left] += d * l.muk * l.N;
+    });
+    const ext = bodies.map((b, i) => b.ext + slip[i]);
 
     const a = new Array(n).fill(0);
     const f = new Array(n).fill(0);
@@ -170,7 +175,7 @@
       for (const i of members) {
         const b = bodies[i];
         M += b.m;
-        D += b.ext;
+        D += ext[i];
         cap += b.mus * b.N;
         kin += b.muk * b.N;
       }
@@ -212,7 +217,7 @@
       let extSub = 0;
       for (const i of left) {
         mSub += bodies[i].m;
-        extSub += bodies[i].ext + f[i];
+        extSub += ext[i] + f[i];
       }
       F[j] = (mSub * a[l.left] - extSub) / linkSigns(l.type).left;
     });
@@ -220,6 +225,12 @@
     let valid = true;
     const tolF = 1e-7 * scale;
     links.forEach((l, j) => {
+      if (l.type === 'stack') {
+        if (engaged(j)) {
+          if (Math.abs(F[j]) > l.mus * l.N + tolF) valid = false;
+        } else if (states[j] * (a[l.right] - a[l.left]) < -1e-9) valid = false;
+        return;
+      }
       if (engaged(j)) {
         if (F[j] < -tolF) valid = false;
       } else {
@@ -229,7 +240,20 @@
         if (rel < -1e-9) valid = false;
       }
     });
-    return { valid, mask, a, f, fType, F, sides, groups };
+    return { valid, states, a, f, fType, F, sides, groups, slip };
+  }
+
+  // Every combination of link states, most-connected first.
+  function allStates(links) {
+    let out = [[]];
+    links.forEach((l) => {
+      const opts = l.type === 'stack' ? ['on', 1, -1] : ['on', 'off'];
+      const next = [];
+      out.forEach((s) => opts.forEach((o) => next.push(s.concat([o]))));
+      out = next;
+    });
+    const on = (s) => s.filter((x) => x === 'on').length;
+    return out.sort((x, y) => on(y) - on(x));
   }
 
   function solveChain(p) {
@@ -257,46 +281,63 @@
     }
 
     for (const b of bodies) {
-      if (b.kind === 'block' && b.N < -1e-9) {
+      if (b.kind !== 'hanging' && b.N < -1e-9) {
         return {
           kind: 'chain',
           ok: false,
           error:
             b.name +
-            ' would lift off the surface: the applied force pulls away from the surface harder than the block presses into it. Lower the force or its angle.',
+            ' would lift off ' + (b.kind === 'top' ? 'the block below it' : 'the surface') +
+            ': the applied force pulls away harder than the block presses down. Lower the force or its angle.',
           ...model,
         };
       }
       if (b.N < 0) b.N = 0;
     }
 
-    const masks = [];
-    for (let m = 0; m < 1 << links.length; m++) masks.push(m);
-    masks.sort((x, y) => popcount(y) - popcount(x));
     let sol = null;
-    for (const m of masks) {
-      const r = tryPattern(model, m);
+    const combos = allStates(links);
+    for (const st of combos) {
+      const r = tryPattern(model, st);
       if (r.valid) {
         sol = r;
         break;
       }
     }
-    if (!sol) sol = tryPattern(model, (1 << links.length) - 1);
+    if (!sol) sol = tryPattern(model, combos[0]);
 
     bodies.forEach((b, i) => {
       b.a = sol.a[i];
       b.f = sol.f[i];
       b.fType = sol.fType[i];
+      b.slip = sol.slip[i];
       b.fMaxStatic = b.mus * b.N;
       b.fKinetic = b.muk * b.N;
       b.Fnet = b.m * b.a;
     });
 
     links.forEach((l, j) => {
-      l.engaged = !!((sol.mask >> j) & 1);
-      l.F = l.engaged ? Math.max(0, sol.F[j]) : 0;
+      l.engaged = sol.states[j] === 'on';
       l.sides = sol.sides[j];
       l.indeterminate = false;
+      if (l.type === 'stack') {
+        // Fs: friction on the top block along s (+/-). The base feels -Fs.
+        l.Fs = l.engaged ? sol.F[j] : -sol.states[j] * l.muk * l.N;
+        l.F = Math.abs(l.Fs);
+        l.fType = l.engaged ? 'static' : 'kinetic';
+        l.slipDir = l.engaged ? 0 : sol.states[j];
+        if (!l.engaged) {
+          // What friction would be needed for the top block to move with its base?
+          const stick = sol.states.slice();
+          stick[j] = 'on';
+          const t = tryPattern(model, stick);
+          l.test = { a: t.a[l.left], need: Math.abs(t.F[j]), max: l.mus * l.N };
+        } else {
+          l.test = { a: sol.a[l.left], need: l.F, max: l.mus * l.N };
+        }
+        return;
+      }
+      l.F = l.engaged ? Math.max(0, sol.F[j]) : 0;
       // Held at rest by static friction on both sides: Newton's laws alone
       // cannot pin down how the load is shared, so this force is not unique.
       if (l.engaged && l.sides) {
@@ -317,7 +358,19 @@
     };
   }
 
-  const Physics = { DEG, solveAtwood, solveChain, buildChain, linkSigns };
+  /*
+   * A block slides from rest a distance d down a ramp with acceleration a (magnitude),
+   * a smooth lip turns it horizontal at the table edge, and it falls a height H.
+   */
+  function launch({ a, d, H, g }) {
+    if (!(a > 0) || !(d > 0)) return null;
+    const tRamp = Math.sqrt((2 * d) / a);
+    const v0 = a * tRamp;
+    const tAir = Math.sqrt((2 * H) / g);
+    return { tRamp, v0, tAir, R: v0 * tAir, vLand: Math.hypot(v0, g * tAir) };
+  }
+
+  const Physics = { DEG, solveAtwood, solveChain, buildChain, linkSigns, launch };
   if (typeof module !== 'undefined' && module.exports) module.exports = Physics;
   else global.Physics = Physics;
 })(typeof window !== 'undefined' ? window : globalThis);

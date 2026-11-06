@@ -253,7 +253,7 @@ body {
 .field > span { font-size: 0.92rem; }
 .field .unit { color: var(--muted); font-size: 0.8rem; }
 
-input[type="number"], select {
+input[type="number"], input[type="text"], select {
   font: inherit;
   font-family: var(--font-mono);
   font-size: 0.9rem;
@@ -523,3 +523,4 @@ details.check-group summary { cursor: pointer; font-weight: 700; font-size: 0.9r
   .tabs { order: 3; }
   .panel { order: 4; }
 }
+input[disabled] { color: var(--muted); cursor: not-allowed; }

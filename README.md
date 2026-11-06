@@ -10,7 +10,7 @@ It is a static web page: plain HTML, CSS and JavaScript, with no build step and 
 | --- | --- |
 | **Atwood machine** | Two masses on one string over a massless, frictionless pulley. |
 | **Modified Atwood** | 1–3 blocks on a table, tied by a string over a pulley at the edge to a hanging block. |
-| **Inclined plane** | 1–3 blocks on a ramp at any angle (0–85°), with an optional hanging block over a pulley at the top. |
+| **Inclined plane** | 1–3 blocks on a ramp at any angle (0–85°). The low end faces right. Optional hanging block over a pulley at the top, or a launch off the table at the bottom as a projectile. |
 | **Blocks on a surface** | 1–4 blocks on a level surface, optionally with a string from the first block to the last. |
 
 On every surface you can:
@@ -18,8 +18,9 @@ On every surface you can:
 - set each block's mass;
 - choose whether neighboring blocks are **touching** (contact forces, Newton's third-law pairs), **tied with a string** (tension), or **apart**;
 - on a level surface with 3 or more blocks, tie a **long string from Block 1 to the last block** that passes over the blocks between (for example: Block 2 pushes Block 3, which pulls Block 1 along by the string);
+- **stack a block on top** of any block, with its own μs and μk between the blocks; the simulator tests whether it rides along or slips;
 - turn on **friction** with static (μs) and kinetic (μk) coefficients, either shared or set per block;
-- add an **applied force** of any size and direction on any block (angled forces change the normal force);
+- add an **applied force** of any size and direction on any block, including a stacked block (angled forces change the normal force);
 - pick g for Earth, the Moon, Mars or Jupiter.
 
 ## For students
@@ -28,11 +29,13 @@ On every surface you can:
 - **Free-body diagrams**: one diagram per object. Forces from the same string or contact share a color, and the action–reaction pairs are explained below the diagrams, including why W and N on the same block are *not* a third-law pair.
 - **Motion graph**: position–, velocity– and acceleration–time graphs for any object, drawn as it moves.
 - **Worked solution**: a step-by-step solution using the student's numbers. It stays locked until the student checks their answers or chooses *Show answers*.
+- **Launch off the table** (inclined plane): the block slides a distance d down the ramp, a smooth lip turns it horizontal, and it falls a height H as a projectile. Students predict the launch speed, time in the air and landing distance; the graph shows x, vₓ and v_y against time.
+- **Mystery mass**: one mass is hidden. Students measure the motion with the clock, ruler, readouts and graphs, then work out the mass (5% tolerance). Force values, the acceleration graph and the worked solution stay hidden until *Show answers*.
 - **Motion dots** leave a mark every 0.1 s so students can see the spacing grow, and the meter-stick scale lets them measure distances.
 
 ## For teachers
 
-- **Copy link to this setup** puts the full setup in the URL, so you can assign an exact problem.
+- **Copy link to this setup** puts the full setup in the URL, so you can assign an exact problem. With **Mystery mass** on, the hidden value is left out of the link, so each student who opens it gets a different mass.
 - **New random problem** gives fresh numbers with the same arrangement of blocks.
 
 ## Physics notes

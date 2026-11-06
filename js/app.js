@@ -35,6 +35,9 @@
         hanging: { on: false, m: 2 },
         applied: { on: false, F: 20, angle: 0, block: 0 },
         longString: false,
+        stack: { on: false, base: 0, m: 1, mus: 0.5, muk: 0.4 },
+        launch: { on: false, d: 2, H: 1 },
+        mystery: { on: false, target: 'b0' },
       },
       o
     );
@@ -43,7 +46,7 @@
     return {
       scenario: 'atwood',
       g: 9.8,
-      atwood: { m1: 3, m2: 5 },
+      atwood: { m1: 3, m2: 5, mystery: { on: false, target: 'm1' } },
       modified: surfaceDefaults({ blocks: [blk(4)], hanging: { on: true, m: 2 } }),
       incline: surfaceDefaults({ theta: 30, blocks: [blk(5)], hanging: { on: false, m: 3 } }),
       horizontal: surfaceDefaults({
@@ -71,10 +74,67 @@
     revealed: false,
     pred: {},
     checkSig: '',
+    mystery: { key: '', value: 0 }, // the hidden mass, never put in share links
   };
 
   const cur = () => state[state.scenario];
   const isAtwood = () => state.scenario === 'atwood';
+
+  // Launching off the table needs one block on the ramp with nothing holding it back.
+  function launchBlocked(c) {
+    if (state.scenario !== 'incline') return 'not incline';
+    if (c.blocks.length > 1) return 'Launching works with one block on the ramp. Remove the other blocks.';
+    if (c.hanging.on) return 'Launching works without a pulley. Turn off the hanging block.';
+    if (c.stack.on) return 'Launching works without a stacked block. Turn off the block on top.';
+    return '';
+  }
+  const launchActive = () => state.scenario === 'incline' && cur().launch.on && !launchBlocked(cur());
+
+  const mysteryOn = () => !!(cur().mystery && cur().mystery.on);
+  function mysteryTargets() {
+    const sc = state.scenario;
+    const c = cur();
+    if (sc === 'atwood') return [['m1', 'Mass 1'], ['m2', 'Mass 2']];
+    const out = c.blocks.map((b, i) => ['b' + i, 'Block ' + (i + 1)]);
+    const nb = c.blocks.length;
+    const hang = sc === 'modified' || (sc === 'incline' && c.hanging.on);
+    if (hang) out.push(['hang', 'Block ' + (nb + 1) + ' (hanging)']);
+    if (c.stack.on) out.push(['top', 'Block ' + (nb + (hang ? 2 : 1)) + ' (on top)']);
+    return out;
+  }
+  function mysteryTarget() {
+    const t = cur().mystery.target;
+    const list = mysteryTargets();
+    return list.some((x) => x[0] === t) ? t : list[0][0];
+  }
+  const isMystery = (target) => mysteryOn() && mysteryTarget() === target;
+  const massOf = (target, given) => (isMystery(target) ? ui.mystery.value : given);
+  // Which body index in the analysis is the mystery one?
+  function mysteryBodyIndex() {
+    if (!mysteryOn() || !analysis) return -1;
+    const t = mysteryTarget();
+    if (t === 'm1') return 0;
+    if (t === 'm2') return 1;
+    if (t[0] === 'b') return +t.slice(1);
+    if (!analysis.bodies) return -1;
+    return analysis.bodies.findIndex((b) => b.kind === (t === 'hang' ? 'hanging' : 'top'));
+  }
+  const massText = (i, m) => (i === mysteryBodyIndex() && !ui.revealed ? '?' : trimNum(m));
+
+  // Pick a hidden mass that makes the system actually move.
+  function newMystery() {
+    const key = state.scenario + ':' + mysteryTarget();
+    for (let k = 0; k < 40; k++) {
+      ui.mystery = { key, value: Math.round((0.5 + Math.random() * 9.5) * 2) / 2 };
+      const an = isAtwood() ? P.solveAtwood(atwoodInput()) : P.solveChain(physicsInput());
+      if (an.ok && !an.atRest) return;
+    }
+  }
+  function ensureMystery() {
+    if (!mysteryOn()) return;
+    if (ui.mystery.key !== state.scenario + ':' + mysteryTarget()) newMystery();
+  }
+  const atwoodInput = () => ({ m1: massOf('m1', state.atwood.m1), m2: massOf('m2', state.atwood.m2), g: state.g });
 
   /* ======================================================================
    * Formatting helpers
@@ -122,10 +182,10 @@
   function physicsInput() {
     const sc = state.scenario;
     const c = cur();
-    const blocks = c.blocks.map((b) => {
+    const blocks = c.blocks.map((b, i) => {
       const mus = c.sameMu ? c.mus : b.mus;
       const muk = Math.min(c.sameMu ? c.muk : b.muk, mus);
-      return { m: b.m, mus, muk };
+      return { m: massOf('b' + i, b.m), mus, muk };
     });
     const hang = sc === 'modified' || (sc === 'incline' && c.hanging.on);
     return {
@@ -135,9 +195,16 @@
       blocks,
       links: c.links.slice(),
       longString: sc === 'horizontal' && !!c.longString && blocks.length >= 3,
-      hanging: hang ? { m: c.hanging.m } : null,
+      hanging: hang ? { m: massOf('hang', c.hanging.m) } : null,
+      stack: c.stack.on && !launchActive()
+        ? { base: Math.min(c.stack.base, blocks.length - 1), m: massOf('top', c.stack.m), mus: c.stack.mus, muk: c.stack.muk }
+        : null,
       applied: c.applied.on
-        ? { F: c.applied.F, angle: c.applied.angle, block: Math.min(c.applied.block, blocks.length - 1) }
+        ? {
+            F: c.applied.F,
+            angle: c.applied.angle,
+            block: c.applied.block === 'top' ? (c.stack.on ? 'top' : 0) : Math.min(c.applied.block, blocks.length - 1),
+          }
         : null,
     };
   }
@@ -153,6 +220,16 @@
         k++;
         const T = nStrings > 1 ? 'T' + sub(k) : 'T';
         return { onLeft: T, onRight: T, name: T };
+      }
+      if (l.type === 'stack') {
+        // left = base block, right = top block
+        return {
+          onLeft: 'f' + sub(R) + '→' + sub(L),
+          onRight: 'f' + sub(L) + '→' + sub(R),
+          nOnLeft: 'N' + sub(R) + '→' + sub(L),
+          nOnRight: 'N' + sub(L) + '→' + sub(R),
+          name: 'f' + sub(L) + '→' + sub(R),
+        };
       }
       return {
         onLeft: 'F' + sub(R) + '→' + sub(L),
@@ -184,17 +261,26 @@
     );
   }
 
+  const hiddenMass = (label) =>
+    '<label class="field"><span>' + label + ' <span class="unit">(kg)</span></span><input type="text" value="?" disabled aria-label="' +
+    label + ' is the mystery mass"></label>';
+  const selectField = (label, id, path, options, value) =>
+    '<label class="field" for="' + id + '"><span>' + label + '</span><select id="' + id + '" data-path="' + path + '">' +
+    options.map(([v, t]) => '<option value="' + v + '"' + (String(v) === String(value) ? ' selected' : '') + '>' + t + '</option>').join('') +
+    '</select></label>';
+
   function renderControls() {
     const sc = state.scenario;
     const c = cur();
+    ensureMystery();
     let h = '';
 
     if (sc === 'atwood') {
       h += '<div class="group"><h2>Masses</h2>';
       h += '<div class="blk"><span class="tag" style="background:var(--b1)">1</span>' +
-        numField('Mass 1', 'm1', c.m1, 'kg', { min: 0.01, step: 0.1 }) + '<span></span></div>';
+        (isMystery('m1') ? hiddenMass('Mass 1') : numField('Mass 1', 'm1', c.m1, 'kg', { min: 0.01, step: 0.1 })) + '<span></span></div>';
       h += '<div class="blk"><span class="tag" style="background:var(--b2)">2</span>' +
-        numField('Mass 2', 'm2', c.m2, 'kg', { min: 0.01, step: 0.1 }) + '<span></span></div>';
+        (isMystery('m2') ? hiddenMass('Mass 2') : numField('Mass 2', 'm2', c.m2, 'kg', { min: 0.01, step: 0.1 })) + '<span></span></div>';
       h += '<p class="note">Both masses hang from one string over the pulley.</p></div>';
     } else {
       if (sc === 'incline') {
@@ -220,7 +306,9 @@
             '</div></div>';
         }
         h += '<div class="blk"><span class="tag" style="background:var(--b' + (i + 1) + ')">' + (i + 1) + '</span><div class="vals">' +
-          '<label>Mass (kg)<input type="number" id="in-' + sc + '-b' + i + '-m" data-path="blocks.' + i + '.m" value="' + trimNum(b.m) + '" min="0.01" max="1000" step="0.1" inputmode="decimal"></label>' +
+          (isMystery('b' + i)
+            ? '<label>Mass (kg)<input type="text" value="?" disabled aria-label="Block ' + (i + 1) + ' is the mystery mass"></label>'
+            : '<label>Mass (kg)<input type="number" id="in-' + sc + '-b' + i + '-m" data-path="blocks.' + i + '.m" value="' + trimNum(b.m) + '" min="0.01" max="1000" step="0.1" inputmode="decimal"></label>') +
           (perMu
             ? '<label>μs<input type="number" id="in-' + sc + '-b' + i + '-mus" data-path="blocks.' + i + '.mus" value="' + trimNum(b.mus) + '" min="0" max="2" step="0.05"></label>' +
               '<label>μk<input type="number" id="in-' + sc + '-b' + i + '-muk" data-path="blocks.' + i + '.muk" value="' + trimNum(b.muk) + '" min="0" max="2" step="0.05"></label>'
@@ -243,13 +331,44 @@
       if (sc === 'modified') {
         h += '<div class="group"><h2>Hanging block</h2>' +
           '<div class="blk"><span class="tag" style="background:var(--b' + (nb + 1) + ')">' + (nb + 1) + '</span>' +
-          numField('Block ' + (nb + 1) + ' mass', 'hanging.m', c.hanging.m, 'kg', { min: 0.01 }) + '<span></span></div>' +
+          (isMystery('hang') ? hiddenMass('Block ' + (nb + 1) + ' mass') : numField('Block ' + (nb + 1) + ' mass', 'hanging.m', c.hanging.m, 'kg', { min: 0.01 })) + '<span></span></div>' +
           '<p class="note">Tied to Block ' + nb + ' by a string over the pulley at the table edge.</p></div>';
       } else if (sc === 'incline') {
         h += '<div class="group"><h2>Pulley</h2>' + checkField('Hang a block over a pulley at the top', 'hanging.on', c.hanging.on);
         if (c.hanging.on) {
           h += '<div class="blk"><span class="tag" style="background:var(--b' + (nb + 1) + ')">' + (nb + 1) + '</span>' +
-            numField('Block ' + (nb + 1) + ' mass', 'hanging.m', c.hanging.m, 'kg', { min: 0.01 }) + '<span></span></div>';
+            (isMystery('hang') ? hiddenMass('Block ' + (nb + 1) + ' mass') : numField('Block ' + (nb + 1) + ' mass', 'hanging.m', c.hanging.m, 'kg', { min: 0.01 })) + '<span></span></div>';
+        }
+        h += '</div>';
+
+        // projectile launch off the table at the bottom of the ramp
+        const why = launchBlocked(c);
+        h += '<div class="group"><h2>Launch</h2>' + checkField('Fly off the table at the bottom of the ramp', 'launch.on', c.launch.on);
+        if (c.launch.on && why) h += '<p class="warn">' + why + '</p>';
+        if (c.launch.on && !why) {
+          h += numField('Distance slid down the ramp, d', 'launch.d', c.launch.d, 'm', { min: 0.2, max: 5, step: 0.1 });
+          h += numField('Table height, H', 'launch.H', c.launch.H, 'm', { min: 0.1, max: 3, step: 0.1 });
+          h += '<p class="note">A smooth curve at the bottom turns the block horizontal without changing its speed. Then it falls as a projectile. Fₐ stops acting once the block leaves the ramp.</p>';
+        }
+        h += '</div>';
+      }
+
+      // a block resting on top of another block
+      const hangNow = sc === 'modified' || (sc === 'incline' && c.hanging.on);
+      const topNum = nb + (hangNow ? 2 : 1);
+      if (!launchActive()) {
+        h += '<div class="group"><h2>Stacked block</h2>' + checkField('Put a block on top of another block', 'stack.on', c.stack.on);
+        if (c.stack.on) {
+          h += '<div class="blk"><span class="tag" style="background:var(--b' + ((topNum - 1) % 5 + 1) + ')">' + topNum + '</span><div class="vals">' +
+            (isMystery('top')
+              ? '<label>Mass (kg)<input type="text" value="?" disabled aria-label="The top block is the mystery mass"></label>'
+              : '<label>Mass (kg)<input type="number" id="in-' + sc + '-top-m" data-path="stack.m" value="' + trimNum(c.stack.m) + '" min="0.01" max="1000" step="0.1" inputmode="decimal"></label>') +
+            '</div><span></span></div>';
+          if (nb > 1) h += selectField('Sits on', 'sel-stack-base', 'stack.base', c.blocks.map((b, i) => [i, 'Block ' + (i + 1)]), c.stack.base);
+          h += numField('μs between the blocks', 'stack.mus', c.stack.mus, '', { min: 0, max: 2, step: 0.05 });
+          h += numField('μk between the blocks', 'stack.muk', c.stack.muk, '', { min: 0, max: 2, step: 0.05 });
+          if (c.stack.muk > c.stack.mus) h += '<p class="warn">μk should not be larger than μs. The simulator uses μk = μs.</p>';
+          h += '<p class="note">Block ' + topNum + ' rides along only if static friction between the blocks is strong enough. Otherwise it slips.</p>';
         }
         h += '</div>';
       }
@@ -270,9 +389,9 @@
       if (c.applied.on) {
         h += numField('Size of Fₐ', 'applied.F', c.applied.F, 'N', { min: 0, max: 10000, step: 1 });
         h += numField('Direction', 'applied.angle', c.applied.angle, '°', { min: -180, max: 180, step: 5 });
-        h += '<label class="field" for="sel-applied-block"><span>Acts on</span><select id="sel-applied-block" data-path="applied.block">' +
-          c.blocks.map((b, i) => '<option value="' + i + '"' + (c.applied.block === i ? ' selected' : '') + '>Block ' + (i + 1) + '</option>').join('') +
-          '</select></label>';
+        const targets = c.blocks.map((b, i) => [i, 'Block ' + (i + 1)]);
+        if (c.stack.on && !launchActive()) targets.push(['top', 'Block ' + topNum + ' (on top)']);
+        h += selectField('Acts on', 'sel-applied-block', 'applied.block', targets, c.applied.block);
         h += '<p class="note">0° points ' + (sc === 'incline' ? 'up the slope' : 'right') + ' along the surface and 180° points ' +
           (sc === 'incline' ? 'down the slope' : 'left') + '. Positive angles tilt Fₐ away from the surface; negative angles press it into the surface.</p>';
       }
@@ -287,7 +406,14 @@
       '<button type="button" class="btn btn-small" data-action="random">New random problem</button>' +
       '<button type="button" class="btn btn-small" data-action="share">Copy link to this setup</button>' +
       '<button type="button" class="btn btn-small btn-quiet" data-action="defaults">Start over</button>' +
-      '</div><p class="note" id="share-msg" hidden></p></div>';
+      '</div><p class="note" id="share-msg" hidden></p>' +
+      checkField('Mystery mass', 'mystery.on', mysteryOn());
+    if (mysteryOn()) {
+      h += selectField('Hide the mass of', 'sel-mystery', 'mystery.target', mysteryTargets(), mysteryTarget());
+      h += '<div class="btn-row"><button type="button" class="btn btn-small" data-action="mystery">New mystery mass</button></div>';
+      h += '<p class="note">Measure the motion with the clock, ruler and graphs, then work out the hidden mass. Values and the solution stay hidden until you choose Show answers. A shared link gives each student a different mystery mass.</p>';
+    }
+    h += '</div>';
 
     $('controls').innerHTML = h;
   }
@@ -318,19 +444,30 @@
         if (!c.sameMu) c.blocks.forEach((b) => { b.mus = c.mus; b.muk = c.muk; });
       } else setPath(c, path, el.checked);
       if (path === 'longString' && el.checked && c.links.every((t) => t !== 'none')) c.links[0] = 'none';
+      if (path === 'mystery.on') {
+        ui.pred = {};
+        if (el.checked) newMystery();
+      }
+      if (path === 'stack.on' && !el.checked && c.applied.block === 'top') c.applied.block = 0;
       renderControls();
       changed();
       return;
     }
     if (el.tagName === 'SELECT') {
-      setPath(c, path, parseInt(el.value, 10));
+      const v = el.value;
+      setPath(c, path, /^-?\d+$/.test(v) ? parseInt(v, 10) : v);
+      if (path === 'mystery.target') {
+        ui.pred = {};
+        newMystery();
+        renderControls();
+      }
       changed();
       return;
     }
     const v = parseFloat(el.value);
     const min = parseFloat(el.min);
     const max = parseFloat(el.max);
-    const positive = /\.m$|^m\d$|^m$/.test(path) || path === 'hanging.m';
+    const positive = /\.m$|^m\d$|^m$/.test(path) || path === 'hanging.m' || path === 'stack.m';
     const ok = isFinite(v) && v >= min && v <= max && !(positive && v <= 0);
     el.setAttribute('aria-invalid', ok ? 'false' : 'true');
     if (!ok) return;
@@ -358,11 +495,15 @@
       if (c.blocks.length < 2) return;
       c.blocks.splice(i, 1);
       c.links.splice(Math.max(0, i - 1), 1);
-      if (c.applied.block >= c.blocks.length) c.applied.block = c.blocks.length - 1;
+      if (typeof c.applied.block === 'number' && c.applied.block >= c.blocks.length) c.applied.block = c.blocks.length - 1;
+      if (c.stack.base >= c.blocks.length) c.stack.base = c.blocks.length - 1;
     } else if (act === 'link') {
       c.links[+btn.dataset.index] = btn.dataset.type;
     } else if (act === 'random') {
       randomize();
+    } else if (act === 'mystery') {
+      ui.pred = {};
+      newMystery();
     } else if (act === 'share') {
       share();
       return;
@@ -391,8 +532,16 @@
       c.mus = r(0.2, 0.6, 0.05);
       c.muk = Math.max(0.05, Math.round((c.mus - r(0.05, 0.2, 0.05)) * 100) / 100);
       if (c.applied.on) c.applied.F = r(10, 80, 5);
+      c.stack.m = r(0.5, 5, 0.5);
+      c.stack.mus = r(0.2, 0.7, 0.05);
+      c.stack.muk = Math.max(0.05, Math.round((c.stack.mus - r(0.05, 0.2, 0.05)) * 100) / 100);
+      if (state.scenario === 'incline') {
+        c.launch.d = r(1, 3, 0.1);
+        c.launch.H = r(0.5, 1.5, 0.1);
+      }
     }
     ui.pred = {};
+    if (mysteryOn()) newMystery();
   }
 
   /* ---------- share link ---------- */
@@ -409,7 +558,7 @@
     const done = (ok) => {
       msg.hidden = false;
       msg.innerHTML = ok
-        ? 'Link copied. Anyone who opens it gets this exact setup.'
+        ? 'Link copied. Anyone who opens it gets this exact setup' + (mysteryOn() ? ', with their own mystery mass.' : '.')
         : 'Copy this link: <input type="text" readonly id="share-url" value="' + esc(url) + '" style="width:100%">';
       if (!ok) {
         const inp = $('share-url');
@@ -435,8 +584,10 @@
       state.scenario = data.scenario;
       state.g = num(data.g, 9.8, 0.1, 100);
       const c = data.c || {};
+      const my = c.mystery || {};
+      const mystery = { on: !!my.on, target: typeof my.target === 'string' ? my.target : data.scenario === 'atwood' ? 'm1' : 'b0' };
       if (data.scenario === 'atwood') {
-        state.atwood = { m1: num(c.m1, 3, 0.01, 1000), m2: num(c.m2, 5, 0.01, 1000) };
+        state.atwood = { m1: num(c.m1, 3, 0.01, 1000), m2: num(c.m2, 5, 0.01, 1000), mystery };
       } else {
         const d = base[data.scenario];
         const blocks = Array.isArray(c.blocks) && c.blocks.length
@@ -451,6 +602,8 @@
         );
         const ap = c.applied || {};
         const hg = c.hanging || {};
+        const st = c.stack || {};
+        const la = c.launch || {};
         state[data.scenario] = {
           theta: num(c.theta, d.theta, 0, 85),
           blocks,
@@ -465,8 +618,17 @@
             on: !!ap.on,
             F: num(ap.F, 20, 0, 10000),
             angle: num(ap.angle, 0, -180, 180),
-            block: Math.min(Math.max(0, Math.round(num(ap.block, 0, 0, 10))), blocks.length - 1),
+            block: ap.block === 'top' ? 'top' : Math.min(Math.max(0, Math.round(num(ap.block, 0, 0, 10))), blocks.length - 1),
           },
+          stack: {
+            on: !!st.on,
+            base: Math.min(Math.max(0, Math.round(num(st.base, 0, 0, 10))), blocks.length - 1),
+            m: num(st.m, 1, 0.01, 1000),
+            mus: num(st.mus, 0.5, 0, 2),
+            muk: num(st.muk, 0.4, 0, 2),
+          },
+          launch: { on: !!la.on, d: num(la.d, 2, 0.2, 5), H: num(la.H, 1, 0.1, 3) },
+          mystery,
         };
       }
     } catch (err) {
@@ -479,9 +641,8 @@
    * ==================================================================== */
 
   function changed() {
-    analysis = isAtwood()
-      ? P.solveAtwood({ m1: state.atwood.m1, m2: state.atwood.m2, g: state.g })
-      : P.solveChain(physicsInput());
+    ensureMystery();
+    analysis = isAtwood() ? P.solveAtwood(atwoodInput()) : P.solveChain(physicsInput());
     labels = computeLabels(analysis);
     sim = buildSim(analysis);
     anim.t = 0;
@@ -489,6 +650,7 @@
     anim.done = false;
     ui.revealed = false;
     renderScenarioTabs();
+    syncModes();
     renderTrack();
     renderCheck();
     renderLegendAndPairs();
@@ -561,20 +723,26 @@
 
   function buildSurfaceSim(an) {
     const th = an.theta * DEG;
-    const u = { x: Math.cos(th), y: Math.sin(th) };
-    const n = { x: -Math.sin(th), y: Math.cos(th) };
+    // The incline rises to the left, so its low end (and any launch) faces right.
+    const dirX = state.scenario === 'incline' ? -1 : 1;
+    const u = { x: dirX * Math.cos(th), y: Math.sin(th) }; // + along the surface (up the slope)
+    const n = { x: -dirX * Math.sin(th), y: Math.cos(th) }; // away from the surface
     const blocks = an.bodies.filter((b) => b.kind === 'block');
     const hangBody = an.bodies.find((b) => b.kind === 'hanging');
+    const topBody = an.bodies.find((b) => b.kind === 'top');
     const nb = blocks.length;
     const w = 0.42;
     const h = 0.3;
     const hw = 0.3;
+    const wt = 0.3;
+    const ht = 0.24;
     const strLen = 0.4;
     const apart = 0.6;
     const gaps = an.neighbors.map((t) => (t === 'string' ? strLen : t === 'none' ? apart : 0));
     const chain = nb * w + gaps.reduce((a, b) => a + b, 0);
-    const Ls = chain + (an.theta > 0 ? 2.0 : 2.6);
-    const H = hangBody ? (an.theta > 0 ? 1.0 : 1.4) : an.theta > 0 ? 0.25 : 0.5;
+    const L = launchActive() ? cur().launch : null;
+    const Ls = L ? L.d + w / 2 + 0.25 : chain + (state.scenario === 'incline' ? 2.0 : 2.6);
+    const H = L ? L.H : hangBody ? (an.theta > 0 ? 1.0 : 1.4) : an.theta > 0 ? 0.25 : 0.5;
     const S0 = { x: 0, y: H };
     const E = { x: S0.x + Ls * u.x, y: S0.y + Ls * u.y };
 
@@ -589,8 +757,9 @@
       x0.push(cursor + w / 2);
       cursor += w + (gaps[i] || 0);
     }
+    if (L) x0[0] = L.d;
 
-    const geom = { th, u, n, w, h, hw, strLen, gaps, Ls, H, S0, E, x0, nb, hang: !!hangBody };
+    const geom = { th, dirX, u, n, w, h, hw, wt, ht, strLen, gaps, Ls, H, S0, E, x0, nb, hang: !!hangBody, top: !!topBody, launch: !!L };
     if (hangBody) {
       const rp = 0.11;
       const k = (0.09 + (h / 2 - rp) * Math.sin(th)) / Math.cos(th) + 0.01;
@@ -598,24 +767,48 @@
       geom.rp = rp;
       geom.C = C;
       geom.T1 = { x: C.x + n.x * rp, y: C.y + n.y * rp };
-      geom.T2 = { x: C.x + rp, y: C.y };
+      geom.T2 = { x: C.x + dirX * rp, y: C.y };
       geom.dMin = 0.06;
       geom.dMax = geom.T2.y - hw;
       geom.d0 = dir > 0 ? geom.dMin + 0.04 : dir < 0 ? geom.dMax - 0.02 : (geom.dMin + geom.dMax) / 2;
     }
-    const right = Math.max(E.x, hangBody ? geom.T2.x + hw / 2 : 0) + 0.25;
-    const top = Math.max(E.y + h + 0.4, hangBody ? geom.C.y + 0.3 : 0, 0.9);
-    geom.bbox = { x0: -0.75, x1: right + 0.35, y0: -0.12, y1: top + 0.25 };
 
+    // Projectile flight after the ramp
+    let fl = null;
+    if (L) {
+      const b = blocks[0];
+      fl = P.launch({ a: Math.max(0, -b.a), d: L.d, H: L.H, g: an.g });
+      geom.flight = fl;
+    }
+
+    const xs0 = [S0.x, E.x, hangBody ? geom.T2.x - dirX * hw / 2 : S0.x];
+    if (fl) xs0.push(fl.R + 0.4);
+    const xMin = Math.min(...xs0);
+    const xMax = Math.max(...xs0);
+    const top = Math.max(E.y + h + (topBody ? ht : 0) + 0.4, hangBody ? geom.C.y + 0.3 : 0, 0.9);
+    geom.bbox = { x0: xMin - (dirX > 0 ? 0.75 : 0.4), x1: xMax + (dirX > 0 ? 0.35 : 0.6), y0: -0.12, y1: top + 0.25 };
+
+    const tRamp = fl ? fl.tRamp : Infinity;
     const pos = (t) => {
-      const xs = blocks.map((b, i) => x0[i] + 0.5 * b.a * t * t);
+      const tr = Math.min(t, tRamp);
+      const xs = blocks.map((b, i) => x0[i] + 0.5 * b.a * tr * tr);
       const d = hangBody ? geom.d0 + 0.5 * hangBody.a * t * t : 0;
-      return { xs, d };
+      const xt = topBody ? x0[topBody.base] + 0.5 * topBody.a * t * t : 0;
+      let air = null;
+      if (fl && t > tRamp) {
+        const tau = t - tRamp;
+        air = { x: S0.x + fl.v0 * tau, y: H + h / 2 - 0.5 * an.g * tau * tau, tau };
+      }
+      return { xs, d, xt, air };
     };
     const end = hangBody ? 'the pulley' : an.theta > 0 ? 'the top of the ramp' : 'the end of the track';
     const start = an.theta > 0 ? 'the bottom of the ramp' : 'the end of the track';
     const violation = (t) => {
       const p = pos(t);
+      if (fl) {
+        if (p.air && p.air.y - h / 2 <= 0) return 'Block 1 landed ' + fmt(fl.R) + ' m from the table edge';
+        return null;
+      }
       if (p.xs[0] - w / 2 < -1e-9) return 'Block 1 reached ' + start;
       if (p.xs[nb - 1] + w / 2 > Ls + 1e-9) return 'Block ' + nb + ' reached ' + end;
       for (let i = 0; i < nb - 1; i++) {
@@ -628,15 +821,34 @@
         if (p.d < geom.dMin) return 'Block ' + (nb + 1) + ' reached the pulley';
         if (p.d > geom.dMax) return 'Block ' + (nb + 1) + ' hit the floor';
       }
+      if (topBody && Math.abs(p.xt - p.xs[topBody.base]) > w / 2) {
+        return topBody.name.replace(' (on top)', '') + ' slid off Block ' + (topBody.base + 1);
+      }
       return null;
     };
-    const stop = an.atRest ? { t: REST_RUN, reason: null } : findStop(violation);
+    let stop;
+    if (fl) stop = { t: fl.tRamp + fl.tAir, reason: 'Block 1 landed ' + fmt(fl.R) + ' m from the table edge' };
+    else stop = an.atRest ? { t: REST_RUN, reason: null } : findStop(violation);
     return { kind: 'surface', geom, pos, tStop: stop.t, reason: stop.reason };
   }
 
   // Displacement and velocity of a body along its own + direction.
+  // For a launch, x is horizontal distance from the table edge and v splits into vx, vy.
   function bodyMotion(i, t) {
-    const a = analysis.bodies[i].a;
+    const b = analysis.bodies[i];
+    const a = b.a;
+    const fl = sim && sim.geom && sim.geom.flight;
+    if (fl) {
+      const th = sim.geom.th;
+      const d = sim.geom.x0[0];
+      if (t <= fl.tRamp) {
+        const sAlong = d + 0.5 * a * t * t; // distance up the ramp from the edge
+        const sp = -a * t; // speed down the ramp
+        return { s: 0.5 * a * t * t, v: a * t, a, x: -sAlong * Math.cos(th), vx: sp * Math.cos(th), vy: -sp * Math.sin(th), air: false, speed: sp };
+      }
+      const tau = t - fl.tRamp;
+      return { s: 0, v: 0, a: 0, x: fl.v0 * tau, vx: fl.v0, vy: -analysis.g * tau, air: true, speed: Math.hypot(fl.v0, analysis.g * tau) };
+    }
     return { s: 0.5 * a * t * t, v: a * t, a };
   }
 
@@ -772,16 +984,17 @@
     const [px, py] = view.P(c.x, c.y);
     const big = Math.max(10, Math.min(17, view.k * 0.12));
     ctx.translate(px, py);
-    ctx.rotate(-Math.atan2(u.y, u.x));
+    // keep labels upright whichever way the surface slopes
+    ctx.rotate(-(u.x < 0 ? Math.atan2(-u.y, -u.x) : Math.atan2(u.y, u.x)));
     ctx.fillStyle = C.ink;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const roomy = w * view.k > 52 && h * view.k > 34;
+    const roomy = w * view.k > 42 && h * view.k > 30;
     ctx.font = '700 ' + big + 'px ' + C.fontMono;
     ctx.fillText(String(idx + 1), 0, roomy ? -big * 0.45 : 0);
     if (roomy) {
       ctx.font = '400 ' + Math.round(big * 0.72) + 'px ' + C.fontMono;
-      ctx.fillText(trimNum(mass) + ' kg', 0, big * 0.6);
+      ctx.fillText((typeof mass === 'string' ? mass : trimNum(mass)) + ' kg', 0, big * 0.6);
     }
     ctx.restore();
   }
@@ -918,67 +1131,81 @@
       drawBlock(ctx, view, { x: -g.r, y: g.pc.y - p.d1 - g.h / 2 }, up, nn, g.w, g.h, 0, 0, true);
       drawBlock(ctx, view, { x: g.r, y: g.pc.y - p.d2 - g.h / 2 }, up, nn, g.w, g.h, 1, 0, true);
     }
-    drawBlock(ctx, view, { x: -g.r, y: g.pc.y - pos.d1 - g.h / 2 }, up, nn, g.w, g.h, 0, an.bodies[0].m);
-    drawBlock(ctx, view, { x: g.r, y: g.pc.y - pos.d2 - g.h / 2 }, up, nn, g.w, g.h, 1, an.bodies[1].m);
+    drawBlock(ctx, view, { x: -g.r, y: g.pc.y - pos.d1 - g.h / 2 }, up, nn, g.w, g.h, 0, massText(0, an.bodies[0].m));
+    drawBlock(ctx, view, { x: g.r, y: g.pc.y - pos.d2 - g.h / 2 }, up, nn, g.w, g.h, 1, massText(1, an.bodies[1].m));
   }
 
   function drawSurface(ctx, view, t) {
     const g = sim.geom;
     const an = analysis;
     const P = view.P;
-    const { u, n, w, h } = g;
+    const { u, n, w, h, dirX } = g;
     const pos = sim.pos(t);
     const blocks = an.bodies.filter((b) => b.kind === 'block');
     const hangIdx = an.bodies.findIndex((b) => b.kind === 'hanging');
+    const topIdx = an.bodies.findIndex((b) => b.kind === 'top');
+    const at = (sAlong, up) => ({ x: g.S0.x + u.x * sAlong + n.x * up, y: g.S0.y + u.y * sAlong + n.y * up });
 
     drawFloor(ctx, view, g.bbox.x0 + 0.1, g.bbox.x1 - 0.1);
 
-    // bench / ramp
+    // bench / ramp / launch table
     ctx.save();
     ctx.fillStyle = C.bench;
     ctx.strokeStyle = C['bench-edge'];
     ctx.lineWidth = 1.5;
-    if (g.th === 0) {
-      const slab = 0.08;
-      const [ax, ay] = P(0, g.H);
-      const [bx, by] = P(g.Ls, g.H - slab);
-      ctx.fillRect(ax, ay, bx - ax, by - ay);
-      ctx.strokeRect(ax, ay, bx - ax, by - ay);
-      for (const lx of [0.12, g.Ls - 0.2]) {
-        const [qx, qy] = P(lx, g.H - slab);
-        const [rx, ry] = P(lx + 0.08, 0);
-        ctx.fillRect(qx, qy, rx - qx, ry - qy);
-        ctx.strokeRect(qx, qy, rx - qx, ry - qy);
-      }
-    } else {
-      const pts = [P(0, 0), P(g.E.x, 0), P(g.E.x, g.E.y), P(g.S0.x, g.S0.y)];
+    const poly = (pts) => {
+      const q = pts.map(([x, y]) => P(x, y));
       ctx.beginPath();
-      ctx.moveTo(pts[0][0], pts[0][1]);
-      pts.slice(1).forEach((p) => ctx.lineTo(p[0], p[1]));
+      ctx.moveTo(q[0][0], q[0][1]);
+      q.slice(1).forEach((p) => ctx.lineTo(p[0], p[1]));
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
-      // angle marker
-      const [bx, by] = P(0, g.H);
+    };
+    if (g.launch) {
+      // a table whose right edge is the bottom of the ramp, with the ramp on top
+      const slab = 0.08;
+      const left = g.E.x - 0.15;
+      poly([[left, g.H], [g.S0.x, g.H], [g.S0.x, g.H - slab], [left, g.H - slab]]);
+      for (const lx of [left + 0.08, g.S0.x - 0.16]) poly([[lx, g.H - slab], [lx + 0.08, g.H - slab], [lx + 0.08, 0], [lx, 0]]);
+      if (g.th > 0) poly([[g.S0.x, g.S0.y], [g.E.x, g.H], [g.E.x, g.E.y]]);
+      // smooth lip at the bottom
+      ctx.strokeStyle = C.ink;
+      ctx.lineWidth = 1.2;
+      const [lx2, ly2] = P(g.S0.x, g.S0.y);
+      ctx.beginPath();
+      ctx.moveTo(lx2 - 10, ly2 - 10 * Math.tan(g.th));
+      ctx.quadraticCurveTo(lx2 - 4, ly2, lx2, ly2);
+      ctx.stroke();
+    } else if (g.th === 0) {
+      const slab = 0.08;
+      poly([[0, g.H], [g.E.x, g.H], [g.E.x, g.H - slab], [0, g.H - slab]]);
+      for (const lx of [0.12, g.Ls - 0.2]) poly([[lx, g.H - slab], [lx + 0.08, g.H - slab], [lx + 0.08, 0], [lx, 0]]);
+    } else {
+      poly([[g.S0.x, 0], [g.E.x, 0], [g.E.x, g.E.y], [g.S0.x, g.S0.y]]);
+    }
+    if (g.th > 0) {
+      // angle marker at the bottom of the slope, inside the ramp
+      const [bx, by] = P(g.S0.x, g.S0.y);
       const rr = Math.min(70, 0.55 * view.k);
       ctx.strokeStyle = C.muted;
       ctx.lineWidth = 1;
       ctx.setLineDash([3, 3]);
       ctx.beginPath();
       ctx.moveTo(bx, by);
-      ctx.lineTo(bx + rr * 1.5, by);
+      ctx.lineTo(bx + dirX * rr * 1.5, by);
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.beginPath();
-      ctx.arc(bx, by, rr, -g.th, 0);
+      if (dirX > 0) ctx.arc(bx, by, rr, -g.th, 0);
+      else ctx.arc(bx, by, rr, -Math.PI, -Math.PI + g.th);
       ctx.stroke();
       ctx.fillStyle = C.ink;
       ctx.font = '600 13px ' + C.fontMono;
       ctx.textBaseline = 'middle';
-      // label sits inside the ramp, below the surface, so a block at the bottom never covers it
       const la = g.th * 0.35;
-      ctx.textAlign = 'left';
-      ctx.fillText('θ = ' + trimNum(an.theta) + '°', bx + (rr + 8) * Math.cos(la), by - (rr + 8) * Math.sin(la) + 8);
+      ctx.textAlign = dirX > 0 ? 'left' : 'right';
+      ctx.fillText('θ = ' + trimNum(an.theta) + '°', bx + dirX * (rr + 8) * Math.cos(la), by - (rr + 8) * Math.sin(la) + 8);
     }
     ctx.restore();
 
@@ -992,8 +1219,8 @@
     ctx.textBaseline = 'middle';
     const nTicks = Math.floor(g.Ls * 10 + 1e-9);
     for (let i = 0; i <= nTicks; i++) {
-      const s = i * 0.1;
-      const base = { x: g.S0.x + u.x * s, y: g.S0.y + u.y * s };
+      const s2 = i * 0.1;
+      const base = at(s2, 0);
       const len = i % 10 === 0 ? 0.07 : i % 5 === 0 ? 0.05 : 0.025;
       const [ax, ay] = P(base.x, base.y);
       const [bx, by] = P(base.x - n.x * len, base.y - n.y * len);
@@ -1006,16 +1233,40 @@
         ctx.fillText(i % 10 === 0 ? i / 10 + (i === 0 ? '' : ' m') : (i / 10).toFixed(1), tx, ty);
       }
     }
+    // landing ruler on the floor for a launch
+    if (g.launch && g.flight) {
+      const R = g.flight.R;
+      const maxX = Math.ceil((R + 0.3) * 10);
+      for (let i = 0; i <= maxX; i++) {
+        const [ax, ay] = P(g.S0.x + i * 0.1, 0);
+        const len = i % 10 === 0 ? 9 : i % 5 === 0 ? 6 : 3;
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(ax, ay - len);
+        ctx.stroke();
+        if (i % 5 === 0 && view.k > 50) ctx.fillText(i % 10 === 0 ? i / 10 + ' m' : (i / 10).toFixed(1), ax, ay + 14);
+      }
+      // dashed line down from the table edge
+      const [ex, ey] = P(g.S0.x, g.H);
+      const [, fy] = P(g.S0.x, 0);
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      ctx.moveTo(ex, ey);
+      ctx.lineTo(ex, fy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
     ctx.restore();
 
     // end stops
     ctx.save();
     ctx.fillStyle = C['bench-edge'];
-    const stops = [0];
+    const stops = [];
+    if (!g.launch) stops.push(0);
     if (!g.hang) stops.push(g.Ls);
-    for (const s of stops) {
-      const base = { x: g.S0.x + u.x * s, y: g.S0.y + u.y * s };
-      const dirOut = s === 0 ? -1 : 1;
+    for (const s2 of stops) {
+      const dirOut = s2 === 0 ? -1 : 1;
+      const base = at(s2, 0);
       const c = { x: base.x + u.x * dirOut * 0.03 + n.x * 0.06, y: base.y + u.y * dirOut * 0.03 + n.y * 0.06 };
       blockPath(ctx, view, c, u, n, 0.06, 0.12);
       ctx.fill();
@@ -1034,7 +1285,7 @@
       ctx.lineTo(cx, cy);
       ctx.stroke();
       const last = blocks.length - 1;
-      const front = { x: g.S0.x + u.x * (pos.xs[last] + w / 2) + n.x * h / 2, y: g.S0.y + u.y * (pos.xs[last] + w / 2) + n.y * h / 2 };
+      const front = at(pos.xs[last] + w / 2, h / 2);
       const slack = !an.links.find((l) => l.hanging).engaged;
       ctx.strokeStyle = C.ink;
       ctx.lineWidth = 1.6;
@@ -1045,7 +1296,8 @@
       ctx.moveTo(fx, fy);
       ctx.lineTo(t1x, t1y);
       const angN = Math.atan2(n.y, n.x);
-      ctx.arc(cx, cy, g.rp * view.k, -angN, 0, false);
+      if (dirX > 0) ctx.arc(cx, cy, g.rp * view.k, -angN, 0, false);
+      else ctx.arc(cx, cy, g.rp * view.k, -angN, -Math.PI, true);
       const [t2x, t2y] = P(g.T2.x, g.T2.y - pos.d);
       ctx.lineTo(t2x, t2y);
       ctx.stroke();
@@ -1070,17 +1322,14 @@
     an.links.forEach((l) => {
       if (l.hanging || l.type !== 'string') return;
       if (l.long) {
-        // runs over the top of the blocks between, on two short posts
-        const post = 0.1;
-        const y = h + post;
+        // runs over the blocks between, on two short posts (higher if a block is stacked)
+        const y = h + (g.top ? g.ht : 0) + 0.1;
         const A0 = pos.xs[l.left];
         const B0 = pos.xs[l.right];
-        const pts = [
-          [A0, h],
-          [A0, y],
-          [B0, y],
-          [B0, h],
-        ].map(([sAlong, up]) => P(g.S0.x + u.x * sAlong + n.x * up, g.S0.y + u.y * sAlong + n.y * up));
+        const pts = [[A0, h], [A0, y], [B0, y], [B0, h]].map(([sAlong, up]) => {
+          const q = at(sAlong, up);
+          return P(q.x, q.y);
+        });
         ctx.save();
         if (!l.engaged) ctx.setLineDash([4, 4]);
         ctx.beginPath();
@@ -1092,8 +1341,8 @@
       }
       const a = pos.xs[l.left] + w / 2;
       const b = pos.xs[l.right] - w / 2;
-      const A = { x: g.S0.x + u.x * a + n.x * h / 2, y: g.S0.y + u.y * a + n.y * h / 2 };
-      const B = { x: g.S0.x + u.x * b + n.x * h / 2, y: g.S0.y + u.y * b + n.y * h / 2 };
+      const A = at(a, h / 2);
+      const B = at(b, h / 2);
       const [ax, ay] = P(A.x, A.y);
       const [bx, by] = P(B.x, B.y);
       ctx.beginPath();
@@ -1109,34 +1358,51 @@
     });
     ctx.restore();
 
-    const centerOf = (s) => ({ x: g.S0.x + u.x * s + n.x * h / 2, y: g.S0.y + u.y * s + n.y * h / 2 });
+    const centerOf = (s2) => at(s2, h / 2);
+    const topCenter = (s2) => at(s2, h + g.ht / 2);
     const hangCenter = (d) => ({ x: g.T2.x, y: g.T2.y - d - g.hw / 2 });
     const ux = { x: 1, y: 0 };
     const uy = { x: 0, y: 1 };
+    const block1 = (p) => (p.air ? { c: { x: p.air.x, y: p.air.y }, uu: ux, nn: uy } : { c: centerOf(p.xs[0]), uu: u, nn: n });
 
     for (const ts of strobeTimes(t)) {
       const p = sim.pos(ts);
-      blocks.forEach((b, i) => drawBlock(ctx, view, centerOf(p.xs[i]), u, n, w, h, i, 0, true));
+      blocks.forEach((b, i) => {
+        if (i === 0) {
+          const q = block1(p);
+          drawBlock(ctx, view, q.c, q.uu, q.nn, w, h, 0, 0, true);
+        } else drawBlock(ctx, view, centerOf(p.xs[i]), u, n, w, h, i, 0, true);
+      });
       if (g.hang) drawBlock(ctx, view, hangCenter(p.d), ux, uy, g.hw, g.hw, hangIdx, 0, true);
+      if (g.top) drawBlock(ctx, view, topCenter(p.xt), u, n, g.wt, g.ht, topIdx, 0, true);
     }
-    blocks.forEach((b, i) => drawBlock(ctx, view, centerOf(pos.xs[i]), u, n, w, h, i, b.m));
-    if (g.hang) drawBlock(ctx, view, hangCenter(pos.d), ux, uy, g.hw, g.hw, hangIdx, an.bodies[hangIdx].m);
+    blocks.forEach((b, i) => {
+      if (i === 0) {
+        const q = block1(pos);
+        drawBlock(ctx, view, q.c, q.uu, q.nn, w, h, 0, massText(0, b.m));
+      } else drawBlock(ctx, view, centerOf(pos.xs[i]), u, n, w, h, i, massText(i, b.m));
+    });
+    if (g.hang) drawBlock(ctx, view, hangCenter(pos.d), ux, uy, g.hw, g.hw, hangIdx, massText(hangIdx, an.bodies[hangIdx].m));
+    if (g.top) drawBlock(ctx, view, topCenter(pos.xt), u, n, g.wt, g.ht, topIdx, massText(topIdx, an.bodies[topIdx].m));
 
-    // applied force
+    // applied force (only while the block is on the surface)
     const ap = physicsInput().applied;
-    if (ap && ap.F > 0) {
-      const i = ap.block;
-      const c = centerOf(pos.xs[i]);
+    if (ap && ap.F > 0 && !(pos.air && ap.block === 0)) {
+      const onTop = ap.block === 'top';
+      const i = onTop ? -1 : ap.block;
+      const c = onTop ? topCenter(pos.xt) : centerOf(pos.xs[i]);
+      const bw = onTop ? g.wt : w;
+      const bh = onTop ? g.ht : h;
       const ang = ap.angle * DEG;
       const d = { x: u.x * Math.cos(ang) + n.x * Math.sin(ang), y: u.y * Math.cos(ang) + n.y * Math.sin(ang) };
       const dl = { a: Math.cos(ang), b: Math.sin(ang) }; // local (along, perpendicular)
       const tEdge = Math.min(
-        Math.abs(dl.a) > 1e-9 ? w / 2 / Math.abs(dl.a) : Infinity,
-        Math.abs(dl.b) > 1e-9 ? h / 2 / Math.abs(dl.b) : Infinity
+        Math.abs(dl.a) > 1e-9 ? bw / 2 / Math.abs(dl.a) : Infinity,
+        Math.abs(dl.b) > 1e-9 ? bh / 2 / Math.abs(dl.b) : Infinity
       );
       let len = 0.55;
       // keep a push arrow out of the neighbor behind it
-      if (!(dl.b > 1e-6) && Math.abs(dl.a) > 0.5) {
+      if (!onTop && !(dl.b > 1e-6) && Math.abs(dl.a) > 0.5) {
         const back = dl.a > 0 ? i - 1 : i + 1;
         if (back >= 0 && back < g.nb) {
           const room = Math.abs(pos.xs[i] - pos.xs[back]) - w - 0.04;
@@ -1145,8 +1411,8 @@
       }
       let tail;
       let tip;
-      if (dl.b > 1e-6) {
-        // pulls away from the surface: draw from the face it leaves
+      if (dl.b > 1e-6 || onTop) {
+        // pulls from the face it leaves
         tail = { x: c.x + d.x * tEdge, y: c.y + d.y * tEdge };
         tip = { x: tail.x + d.x * len, y: tail.y + d.y * len };
       } else {
@@ -1162,8 +1428,12 @@
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       const lift = an.links.some((l) => l.long) ? 0.2 : 0.06;
-      const [, topY] = P(c.x + n.x * (h / 2 + lift), c.y + n.y * (h / 2 + lift));
-      const lab = dl.b > 1e-6 ? [x2 + (x2 - x1) * 0.25, y2 + (y2 - y1) * 0.25 - 12] : [(x1 + x2) / 2, Math.min(y1, topY) - 6];
+      const [, topY] = P(c.x + n.x * (bh / 2 + lift), c.y + n.y * (bh / 2 + lift));
+      const pull = dl.b > 1e-6 || onTop;
+      // a push label sits just above its arrow, ending at the arrow tip
+      const lab = pull ? [x2 + (x2 - x1) * 0.25, Math.min(y2, topY) - 12] : [x2 - 8, Math.min(y1, y2) - 11];
+      if (!pull) ctx.textAlign = x2 >= x1 ? 'right' : 'left';
+      if (!pull && x2 < x1) lab[0] = x2 + 8;
       ctx.fillText('Fₐ = ' + trimNum(ap.F) + ' N', lab[0], lab[1]);
       ctx.restore();
     }
@@ -1188,8 +1458,9 @@
       }));
     }
     const th = an.theta * DEG;
-    const u = { x: Math.cos(th), y: Math.sin(th) };
-    const n = { x: -Math.sin(th), y: Math.cos(th) };
+    const dirX = state.scenario === 'incline' ? -1 : 1;
+    const u = { x: dirX * Math.cos(th), y: Math.sin(th) };
+    const n = { x: -dirX * Math.sin(th), y: Math.cos(th) };
     const ap = physicsInput().applied;
     return an.bodies.map((b, i) => {
       const along = (v) => (b.kind === 'hanging' ? { x: 0, y: -Math.sign(v) } : { x: u.x * Math.sign(v), y: u.y * Math.sign(v) });
@@ -1197,18 +1468,32 @@
       if (b.kind === 'block') {
         if (b.N > 1e-9) arrows.push({ dir: n, mag: b.N, color: C['f-n'], label: 'N' });
         if (Math.abs(b.f) > 1e-9) arrows.push({ dir: along(b.f), mag: Math.abs(b.f), color: C['f-f'], label: b.fType === 'static' ? 'fₛ' : 'fₖ' });
-        if (ap && ap.block === i && ap.F > 0) {
-          const ang = ap.angle * DEG;
-          arrows.push({ dir: { x: u.x * Math.cos(ang) + n.x * Math.sin(ang), y: u.y * Math.cos(ang) + n.y * Math.sin(ang) }, mag: ap.F, color: C['f-a'], label: 'Fₐ' });
-        }
+      }
+      const apHere = ap && ap.F > 0 && (ap.block === i || (ap.block === 'top' && b.kind === 'top'));
+      if (apHere) {
+        const ang = ap.angle * DEG;
+        arrows.push({ dir: { x: u.x * Math.cos(ang) + n.x * Math.sin(ang), y: u.y * Math.cos(ang) + n.y * Math.sin(ang) }, mag: ap.F, color: C['f-a'], label: 'Fₐ' });
       }
       an.links.forEach((l, j) => {
+        const nm = labels.links[j];
+        if (l.type === 'stack') {
+          // two third-law pairs: the normal pair and the friction pair
+          if (l.right === i) {
+            if (l.N > 1e-9) arrows.push({ dir: n, mag: l.N, color: linkColor(j), label: nm.nOnRight });
+            if (l.F > 1e-9) arrows.push({ dir: along(l.Fs), mag: l.F, color: linkColor(j), label: nm.onRight, note: l.fType === 'static' ? 'static' : 'kinetic' });
+          }
+          if (l.left === i) {
+            if (l.N > 1e-9) arrows.push({ dir: { x: -n.x, y: -n.y }, mag: l.N, color: linkColor(j), label: nm.nOnLeft });
+            if (l.F > 1e-9) arrows.push({ dir: along(-l.Fs), mag: l.F, color: linkColor(j), label: nm.onLeft, note: l.fType === 'static' ? 'static' : 'kinetic' });
+          }
+          return;
+        }
         if (l.F <= 1e-9 && !l.indeterminate) return;
         const sg = P.linkSigns(l.type);
-        if (l.left === i) arrows.push({ dir: along(sg.left), mag: l.F, color: linkColor(j), label: labels.links[j].onLeft, dashed: l.indeterminate });
-        if (l.right === i) arrows.push({ dir: along(sg.right), mag: l.F, color: linkColor(j), label: labels.links[j].onRight, dashed: l.indeterminate });
+        if (l.left === i) arrows.push({ dir: along(sg.left), mag: l.F, color: linkColor(j), label: nm.onLeft, dashed: l.indeterminate });
+        if (l.right === i) arrows.push({ dir: along(sg.right), mag: l.F, color: linkColor(j), label: nm.onRight, dashed: l.indeterminate });
       });
-      return { body: b, idx: i, tilt: b.kind === 'block' ? th : 0, arrows };
+      return { body: b, idx: i, tilt: b.kind === 'hanging' ? 0 : dirX * th, arrows };
     });
   }
 
@@ -1260,7 +1545,7 @@
       ctx.save();
       ctx.translate(cx, cy);
       ctx.rotate(-s.tilt);
-      if (s.body.kind === 'block') {
+      if (s.body.kind !== 'hanging') {
         ctx.strokeStyle = C.muted;
         ctx.setLineDash([4, 4]);
         ctx.beginPath();
@@ -1290,7 +1575,7 @@
           const dy = -a.dir.y;
           const px = -dy * off;
           const py = dx * off;
-          const L = Math.max(22, a.mag * scale);
+          const L = Math.max(32, a.mag * scale);
           const x1 = cx + px;
           const y1 = cy + py;
           const x2 = x1 + dx * L;
@@ -1305,10 +1590,12 @@
           let lx = x2 + dx * 10;
           let ly = y2 + dy * 12;
           if (Math.abs(dx) > 0.5) ctx.textAlign = dx > 0 ? 'left' : 'right';
-          else {
-            ctx.textAlign = 'center';
-            if (list.length > 1) lx += (k - (list.length - 1) / 2) * 0;
-          }
+          else if (list.length > 1) {
+            const leftSide = k < (list.length - 1) / 2;
+            ctx.textAlign = leftSide ? 'right' : 'left';
+            lx = x2 + (leftSide ? -7 : 7);
+            ly = y2;
+          } else ctx.textAlign = 'center';
           if (ctx.textAlign === 'left') lx = Math.min(lx, cellW * (ci + 1) - tw - 4);
           if (ctx.textAlign === 'right') lx = Math.max(lx, cellW * ci + tw + 4);
           if (Math.abs(dx) > 0.5 && list.length > 1) ly += (k - (list.length - 1) / 2) * 6;
@@ -1326,14 +1613,14 @@
       ctx.font = '700 13px ' + C.fontBody;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'alphabetic';
-      ctx.fillText(s.body.name.replace(' (hanging)', '') + ' · ' + trimNum(s.body.m) + ' kg', cx, baseH - 22);
+      ctx.fillText(s.body.name.replace(/ \((hanging|on top)\)/, '') + ' · ' + massText(s.idx, s.body.m) + ' kg', cx, baseH - 22);
       if (ui.showFbdValues) {
         ctx.font = '600 12px ' + C.fontMono;
         s.arrows
           .filter((a) => a.mag > 1e-9)
           .forEach((a, k) => {
             ctx.fillStyle = a.color;
-            ctx.fillText(a.label + ' = ' + (a.dashed ? '?' : fmt(a.mag) + ' N'), cx, baseH + k * 17);
+            ctx.fillText(a.label + ' = ' + (a.dashed ? '?' : fmt(a.mag) + ' N') + (a.note ? ' (' + a.note + ')' : ''), cx, baseH + k * 17);
           });
       }
     });
@@ -1356,12 +1643,15 @@
       ? (h += chip('var(--l1)', 'T: string tension'))
       : analysis.links.forEach((l, j) => {
           const nm = labels.links[j];
-          h += chip('var(--l' + ((j % 4) + 1) + ')', l.type === 'string' ? nm.name + ': tension' : nm.onRight + ' / ' + nm.onLeft + ': contact pair');
+          h += chip(
+            'var(--l' + ((j % 4) + 1) + ')',
+            l.type === 'string' ? nm.name + ': tension' : l.type === 'stack' ? nm.nOnRight + ', ' + nm.onRight + ' and their partners: between stacked blocks' : nm.onRight + ' / ' + nm.onLeft + ': contact pair'
+          );
         });
     if (analysis.kind === 'chain' && analysis.links.some((l) => l.indeterminate)) h += '<span>Dashed “?”: not uniquely determined</span>';
     legend.innerHTML = h;
 
-    const showV = ui.showFbdValues || ui.revealed;
+    const showV = (ui.showFbdValues || ui.revealed) && !(mysteryOn() && !ui.revealed);
     const val = (F) => (showV ? ' (' + fmt(F) + ' N each)' : '');
     let items = [];
     if (analysis.kind === 'chain') {
@@ -1371,6 +1661,16 @@
         const A = analysis.bodies[l.left];
         const B = analysis.bodies[l.right];
         const sw = '<span class="swatch" style="background:var(--l' + ((j % 4) + 1) + ')"></span>';
+        if (l.type === 'stack') {
+          const kind = l.fType === 'static' ? 'Static' : 'Kinetic';
+          items.push(sw + '<b>' + nm.nOnRight + '</b> (' + A.name + ' pushes up on ' + B.name.replace(' (on top)', '') + ') and <b>' + nm.nOnLeft + '</b> (' + B.name.replace(' (on top)', '') + ' pushes down on ' + A.name +
+            ') are a <b>third-law pair</b>' + val(l.N) + '. That is why ' + A.name + '’s normal force from the surface is larger than its own weight.');
+          if (l.F > 1e-9)
+            items.push(sw + kind + ' friction <b>' + nm.onRight + '</b> on the top block and <b>' + nm.onLeft + '</b> on the block below are a <b>third-law pair</b>' + val(l.F) +
+              ': same size, opposite directions. ' + (l.engaged ? 'The top block rides along without slipping.' : 'The top block slips, so the friction is kinetic.'));
+          else items.push(sw + 'No friction acts between the stacked blocks.');
+          return;
+        }
         if (l.type === 'contact') {
           if (!l.engaged) items.push(sw + A.name + ' and ' + B.name + ' are moving apart, so they do not push on each other. The contact force is zero.');
           else
@@ -1388,6 +1688,7 @@
       items.push('<span class="swatch" style="background:var(--l1)"></span>The string pulls up on Mass 1 and up on Mass 2 with the same tension T' + val(analysis.T) +
         '. Those two pulls are not a third-law pair; each pairs with the mass pulling back down on the string.');
     }
+    if (sim && sim.geom && sim.geom.launch) items.push('These diagrams show the block on the ramp. Once it flies off the table, the only force on it is its weight W, so it accelerates straight down at g.');
     items.push('<b>Weight:</b> Earth pulls each block down, and each block pulls Earth up just as hard. The partner force acts on Earth, so it is not on these diagrams.');
     if (analysis.kind === 'chain')
       items.push('<b>Normal force:</b> the surface pushes on the block and the block pushes back on the surface. W and N on the same block are <b>not</b> a third-law pair: they act on the same object and can have different sizes.');
@@ -1412,8 +1713,10 @@
     if (!analysis || !analysis.ok) return;
     const i = Math.min(ui.track, analysis.bodies.length - 1);
     const tEnd = sim.tStop;
+    const launching = !!(sim.geom && sim.geom.flight);
     const fn = (t) => {
       const m = bodyMotion(i, t);
+      if (launching) return ui.graph === 'x' ? m.x : ui.graph === 'v' ? m.vx : m.vy;
       return ui.graph === 'x' ? m.s : ui.graph === 'v' ? m.v : m.a;
     };
     let ymin = 0;
@@ -1477,7 +1780,13 @@
     ctx.translate(14, T + (H - T - B) / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.textBaseline = 'middle';
-    ctx.fillText(ui.graph === 'x' ? 'displacement (m)' : ui.graph === 'v' ? 'velocity (m/s)' : 'acceleration (m/s²)', 0, 0);
+    ctx.fillText(
+      launching
+        ? ui.graph === 'x' ? 'x from table edge (m)' : ui.graph === 'v' ? 'vₓ (m/s)' : 'v_y (m/s)'
+        : ui.graph === 'x' ? 'displacement (m)' : ui.graph === 'v' ? 'velocity (m/s)' : 'acceleration (m/s²)',
+      0,
+      0
+    );
     ctx.restore();
 
     if (anim.t <= 0) {
@@ -1489,14 +1798,37 @@
       return;
     }
     const tNow = Math.min(anim.t, tEnd);
+    if (launching) {
+      const tl = sim.geom.flight.tRamp;
+      ctx.save();
+      ctx.strokeStyle = C.muted;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(Math.round(X(tl)) + 0.5, T);
+      ctx.lineTo(Math.round(X(tl)) + 0.5, H - B);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = C.muted;
+      ctx.font = '11px ' + C.fontBody;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText('leaves the table', X(tl) + 4, T + 2);
+      ctx.restore();
+    }
     ctx.strokeStyle = C.accent;
     ctx.lineWidth = 2.5;
     ctx.beginPath();
     const steps = 160;
+    const tl = launching ? sim.geom.flight.tRamp : Infinity;
     for (let k = 0; k <= steps; k++) {
       const t = (tNow * k) / steps;
+      const tPrev = (tNow * (k - 1)) / steps;
       const x = X(t);
       const y = Y(fn(t));
+      if (k && tPrev <= tl && t > tl) {
+        ctx.lineTo(X(tl), Y(fn(tl)));
+        ctx.moveTo(X(tl), Y(fn(tl + 1e-9)));
+      }
       k ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
     }
     ctx.stroke();
@@ -1514,6 +1846,10 @@
     const an = analysis;
     const q = [];
     if (!an.ok) return q;
+    const mi = mysteryBodyIndex();
+    if (mi >= 0) {
+      q.push({ key: 'mystery', group: 'main', label: 'Mystery mass: ' + an.bodies[mi].name, sub: 'Measure the motion, then work back to the mass (within 5% counts as correct)', unit: 'kg', value: an.bodies[mi].m, tol: 0.05 });
+    }
     if (an.kind === 'atwood') {
       q.push({ key: 'a', group: 'main', label: 'Acceleration of the system', unit: 'm/s²', value: Math.abs(an.a) });
       q.push({ key: 'T', group: 'main', label: 'Tension in the string, T', unit: 'N', value: an.T });
@@ -1534,6 +1870,14 @@
       const A = l.left + 1;
       const B = l.right + 1;
       const row = { key: 'link' + j + l.type, group: 'main', unit: 'N', value: l.F };
+      if (l.type === 'stack') {
+        const top = an.bodies[l.right].name.replace(' (on top)', '');
+        q.push({ key: 'stackN' + j, group: 'main', unit: 'N', value: l.N, label: 'Normal force between Block ' + A + ' and ' + top, sub: '|' + nm.nOnRight + '| = |' + nm.nOnLeft + '|' });
+        row.label = 'Friction between Block ' + A + ' and ' + top;
+        row.sub = '|' + nm.onRight + '| = |' + nm.onLeft + '|';
+        q.push(row);
+        return;
+      }
       if (l.type === 'string') {
         row.label = 'Tension ' + nm.name;
         row.sub = l.hanging
@@ -1550,9 +1894,17 @@
     });
     an.bodies.forEach((b, i) => {
       if (b.kind === 'block') q.push({ key: 'N' + i, group: 'more', label: 'Normal force on ' + b.name, unit: 'N', value: b.N });
-      if (an.friction && b.kind === 'block') q.push({ key: 'f' + i, group: 'more', label: 'Friction force on ' + b.name, unit: 'N', value: Math.abs(b.f) });
+      if (an.friction && b.kind === 'block') q.push({ key: 'f' + i, group: 'more', label: 'Friction force on ' + b.name + ' from the surface', unit: 'N', value: Math.abs(b.f) });
       q.push({ key: 'net' + i, group: 'more', label: 'Net force on ' + b.name, unit: 'N', value: Math.abs(b.Fnet) });
     });
+    const fl = sim && sim.geom && sim.geom.flight;
+    if (fl) {
+      q.push({ key: 'tRamp', group: 'launch', label: 'Time to slide down the ramp', unit: 's', value: fl.tRamp });
+      q.push({ key: 'v0', group: 'launch', label: 'Speed at the bottom of the ramp', sub: 'the speed it leaves the table with, horizontally', unit: 'm/s', value: fl.v0 });
+      q.push({ key: 'tAir', group: 'launch', label: 'Time in the air', unit: 's', value: fl.tAir });
+      q.push({ key: 'R', group: 'launch', label: 'Landing distance from the table edge', sub: 'horizontal distance', unit: 'm', value: fl.R });
+      q.push({ key: 'vLand', group: 'launch', label: 'Speed just before it lands', unit: 'm/s', value: fl.vLand });
+    }
     return q;
   }
 
@@ -1576,8 +1928,10 @@
       };
       const main = qs.filter((q) => q.group === 'main');
       const more = qs.filter((q) => q.group === 'more');
+      const lau = qs.filter((q) => q.group === 'launch');
       $('check-rows').innerHTML =
-        '<div class="check-group"><h3>System</h3>' + main.map(row).join('') + '</div>' +
+        '<div class="check-group"><h3>' + (lau.length ? 'On the ramp' : 'System') + '</h3>' + main.map(row).join('') + '</div>' +
+        (lau.length ? '<div class="check-group"><h3>Flying off the table</h3>' + lau.map(row).join('') + '</div>' : '') +
         (more.length ? '<details class="check-group"><summary>' + (analysis.kind === 'atwood' ? 'More: net force on each mass' : (analysis.friction ? 'More: normal, friction and net force on each block' : 'More: normal and net force on each block')) + '</summary>' + more.map(row).join('') + '</details>' : '');
     } else {
       document.querySelectorAll('.qrow').forEach((r) => {
@@ -1606,25 +1960,30 @@
       }
       tried++;
       const x = Math.abs(parseFloat(raw));
-      const ok = isFinite(x) && Math.abs(x - ans) <= Math.max(0.02 * Math.abs(ans), 0.01);
+      const ok = isFinite(x) && Math.abs(x - ans) <= Math.max((q.tol || 0.02) * Math.abs(ans), 0.01);
       if (ok) right++;
       r.classList.add(ok ? 'good' : 'bad');
       out.textContent = ok ? '✓ correct' + (reveal ? ' (' + fmt(ans) + ')' : '') : reveal ? '✗ answer: ' + fmt(ans) : x > ans ? '✗ too high' : '✗ too low';
     });
     $('score').textContent = tried ? right + ' of ' + tried + ' correct' : reveal ? '' : 'Enter at least one answer.';
+    if (!reveal && mysteryOn()) {
+      const m = document.querySelector('.qrow[data-key="mystery"] .qr');
+      if (m && m.textContent.startsWith('✗')) m.textContent += '. Check your measured acceleration first.';
+    }
   }
 
   /* ======================================================================
    * Worked solution
    * ==================================================================== */
 
-  function alongTerms(b) {
+  function alongTerms(b, withSlip) {
     const t = [];
     if (b.kind === 'hanging') t.push({ v: b.W, d: 'weight m' + sub(b.index + 1) + 'g' });
     else {
       if (Math.abs(b.Wpar) > 1e-12) t.push({ v: -b.Wpar, d: 'gravity along the slope, m' + sub(b.index + 1) + 'g sin θ' });
       if (Math.abs(b.Fpar) > 1e-12) t.push({ v: b.Fpar, d: 'applied force along the surface' });
     }
+    if (withSlip && Math.abs(b.slip || 0) > 1e-12) t.push({ v: b.slip, d: 'kinetic friction between the stacked blocks' });
     return t;
   }
 
@@ -1658,7 +2017,7 @@
     an.bodies.forEach((b) => {
       const tm = alongTerms(b);
       t += '<tr><td>' + b.name + '</td><td>' + fmt(b.m) + '</td><td>' + fmt(b.W) + '</td><td>' + (tm.length ? tm.map((x) => fmt(x.v)).join(' + ').replace(/\+ −/g, '− ') : '0.00') + '</td><td>' +
-        (b.kind === 'block' ? fmt(b.N) : '—') + '</td>' + (fr ? '<td>' + (b.kind === 'block' ? fmt(b.mus * b.N) : '—') + '</td><td>' + (b.kind === 'block' ? fmt(b.muk * b.N) : '—') + '</td>' : '') + '</tr>';
+        (b.kind !== 'hanging' ? fmt(b.N) : '—') + '</td>' + (fr ? '<td>' + (b.kind === 'block' ? fmt(b.mus * b.N) : '—') + '</td><td>' + (b.kind === 'block' ? fmt(b.muk * b.N) : '—') + '</td>' : '') + '</tr>';
     });
     t += '</tbody></table></div>';
     let notes = '';
@@ -1669,14 +2028,35 @@
       notes += '<p>Fₐ = ' + trimNum(inp.F) + ' N at ' + trimNum(inp.angle) + '° on ' + ap.name + ': along the surface Fₐ cos ' + trimNum(inp.angle) + '° = ' + fmt(ap.Fpar) + ' N' +
         (Math.abs(ap.Fperp) > 1e-9 ? ', and ' + (ap.Fperp > 0 ? 'away from' : 'into') + ' the surface Fₐ sin ' + trimNum(Math.abs(inp.angle)) + '° = ' + fmt(Math.abs(ap.Fperp)) + ' N, so N = ' + fmt(ap.Wperp) + (ap.Fperp > 0 ? ' − ' : ' + ') + fmt(Math.abs(ap.Fperp)) + ' = ' + fmt(ap.N) + ' N' : '') + '.</p>';
     }
+    const stackLink = an.links.find((l) => l.type === 'stack');
+    if (stackLink) {
+      const base = an.bodies[stackLink.left];
+      const top = an.bodies[stackLink.right];
+      const tn = top.name.replace(' (on top)', '');
+      notes += '<p>' + tn + ' rests on ' + base.name + ', so it gets its normal force N = ' + fmt(top.N) + ' N from ' + base.name + '. By Newton’s third law ' + tn + ' presses down on ' + base.name +
+        ' just as hard, so the surface must hold up both: N on ' + base.name + ' = ' + fmt(base.Wperp - base.Fperp) + ' + ' + fmt(top.N) + ' = ' + fmt(base.N) + ' N.</p>';
+    }
     h += '<section><h3>2. Forces on each object</h3>' + t + notes + '</section>';
 
     let step = 3;
+    if (stackLink) {
+      const l = stackLink;
+      const tn = an.bodies[l.right].name.replace(' (on top)', '');
+      const bn = an.bodies[l.left].name;
+      let st = '<section><h3>' + step++ + '. Does ' + tn + ' slip on ' + bn + '?</h3>' +
+        '<p>Suppose the two blocks move together. Then ' + tn + ' needs friction from ' + bn + ' to give it the same acceleration (a = ' + fmt(l.test.a) + ' m/s²). ' +
+        'From ΣF = ma on ' + tn + ' alone, it needs |f| = ' + fmt(l.test.need) + ' N. The most static friction can give is μs·N = ' + trimNum(l.mus) + ' × ' + fmt(l.N) + ' = ' + fmt(l.test.max) + ' N.</p>';
+      if (l.engaged) st += '<p>' + fmt(l.test.need) + ' N ≤ ' + fmt(l.test.max) + ' N, so static friction is enough: <b>the blocks move together</b>.</p>';
+      else
+        st += '<p>' + fmt(l.test.need) + ' N > ' + fmt(l.test.max) + ' N, so static friction is not enough: <b>' + tn + ' slips</b>. Kinetic friction acts instead, μk·N = ' + trimNum(l.muk) + ' × ' + fmt(l.N) + ' = ' + fmt(l.F) + ' N, pushing ' + tn + ' ' +
+          (l.Fs > 0 ? dw.pos : dw.neg) + ' and ' + bn + ' ' + (l.Fs > 0 ? dw.neg : dw.pos) + '. Now each block has its own acceleration.</p>';
+      h += st + '</section>';
+    }
     const broken = an.links.map((l, j) => ({ l, j })).filter((x) => !x.l.engaged);
-    if (an.groups.length > 1) {
+    if (an.groups.length > 1 && !broken.every(({ l }) => l.type === 'stack')) {
       h += '<section><h3>' + step++ + '. Which strings and contacts hold?</h3><p>' +
         (broken.length
-          ? broken.map(({ l, j }) => (l.type === 'string' ? 'String ' + labels.links[j].name + ' goes slack (the objects it joins move toward each other).' : an.bodies[l.left].name + ' and ' + an.bodies[l.right].name + ' move apart, so they stop touching.')).join(' ')
+          ? broken.map(({ l, j }) => (l.type === 'string' ? 'String ' + labels.links[j].name + ' goes slack (the objects it joins move toward each other).' : l.type === 'stack' ? an.bodies[l.right].name.replace(' (on top)', '') + ' slips on ' + an.bodies[l.left].name + '.' : an.bodies[l.left].name + ' and ' + an.bodies[l.right].name + ' move apart, so they stop touching.')).join(' ')
           : 'Some blocks are not connected to each other.') +
         ' Each connected part moves on its own, so solve each part separately.</p></section>';
     }
@@ -1684,14 +2064,15 @@
     an.groups.forEach((gr) => {
       const name = nameOf(gr.members, an.bodies);
       const terms = [];
-      gr.members.forEach((i) => alongTerms(an.bodies[i]).forEach((x) => terms.push(x)));
+      gr.members.forEach((i) => alongTerms(an.bodies[i], true).forEach((x) => terms.push(x)));
       let fTot = 0;
       gr.members.forEach((i) => (fTot += an.bodies[i].f));
       const many = gr.members.length > 1;
       const termStr = terms.length ? terms.map((x, k) => (k ? signed(x.v) : fmt(x.v))).join('') : '0';
       let s = '<section><h3>' + step++ + '. Acceleration' + (an.groups.length > 1 || many ? ' of ' + name : '') + '</h3>';
       if (many) s += '<p>Treat ' + name + ' as one system. Forces between them are internal and cancel in pairs (Newton’s third law), so only outside forces matter. Total mass M = ' + fmt(gr.M) + ' kg.</p>';
-      s += '<div class="eq">Net outside force before friction:\nD = ' + (terms.length > 1 ? termStr + ' = ' : '') + fmt(gr.D) + ' N</div>';
+      const slipNote = gr.members.some((i) => Math.abs(an.bodies[i].slip || 0) > 1e-12) ? ' (this includes the kinetic friction from the slipping block)' : '';
+      s += '<div class="eq">Net outside force before ' + (slipNote ? 'friction with the surface' : 'friction') + ':\nD = ' + (terms.length > 1 ? termStr + ' = ' : '') + fmt(gr.D) + ' N' + slipNote + '</div>';
       if (fr && gr.cap + gr.kin > 0) {
         if (gr.state !== 'sliding') {
           s += '<p>Maximum static friction is Σ μs·N = ' + fmt(gr.cap) + ' N. Since |D| = ' + fmt(Math.abs(gr.D)) + ' N is not larger, static friction holds and the system <b>stays at rest</b>: a = 0. Static friction supplies ' + fmt(Math.abs(gr.D)) + ' N' +
@@ -1728,11 +2109,20 @@
           for (const i of list) {
             const bd = an.bodies[i];
             m += bd.m;
-            alongTerms(bd).forEach((x) => out.push(x.v));
+            alongTerms(bd, true).forEach((x) => out.push(x.v));
             if (Math.abs(bd.f) > 1e-9) out.push(bd.f);
           }
           return { parts: out, M: m };
         };
+        if (l.type === 'stack') {
+          // isolate the top block: f + (its other forces) = m a
+          const top = an.bodies[l.right];
+          const tp = sideParts([l.right]);
+          s += '<p><b>Static friction ' + nm.onRight + '</b>: isolate ' + top.name.replace(' (on top)', '') + '.</p>' +
+            '<div class="eq">' + nm.onRight + tp.parts.map((v) => signed(v)).join('') + ' = (' + fmt(top.m) + ')(' + fmt(top.a) + ')\n' + nm.onRight + ' = ' + fmt(l.Fs) + ' N' +
+            (Math.abs(l.Fs) > 1e-9 ? '  (points ' + (l.Fs > 0 ? dw.pos : dw.neg) + ')' : '') + '</div>';
+          return;
+        }
         const L = sideParts(l.sides.left);
         const R = sideParts(l.sides.right);
         const nL = l.sides.left.length;
@@ -1753,6 +2143,10 @@
           '<div class="eq">' + lhs + ' = (' + fmt(M) + ')(' + fmt(gr.a) + ')\n' + lab + ' = ' + fmt(l.F) + ' N</div>';
       });
       broken.forEach(({ l, j }) => {
+        if (l.type === 'stack') {
+          s += '<p><b>Friction ' + labels.links[j].onRight + '</b> = μk·N = ' + fmt(l.F) + ' N (kinetic, because the top block slips).</p>';
+          return;
+        }
         s += '<p><b>' + (l.type === 'string' ? 'Tension ' + labels.links[j].name : 'Contact ' + labels.links[j].name) + '</b> = 0 N, because ' + (l.type === 'string' ? 'the string is slack.' : 'the blocks are not pressing on each other.') + '</p>';
       });
       h += s + '</section>';
@@ -1761,11 +2155,30 @@
     let net = '<div class="eq">' + an.bodies.map((b) => 'F_net on ' + b.name + ' = m a = ' + fmt(b.m) + ' × ' + fmt(b.a) + ' = ' + fmt(b.Fnet) + ' N').join('\n') + '</div>';
     if (fr) net += '<div class="eq">' + an.bodies.filter((b) => b.kind === 'block').map((b) => 'Friction on ' + b.name + ': ' + (b.fType === 'static' ? 'static, ' : b.fType === 'kinetic' ? 'kinetic, μk·N = ' : '') + fmt(Math.abs(b.f)) + ' N').join('\n') + '</div>';
     h += '<section><h3>' + step++ + '. Net force on each object</h3>' + net + '</section>';
+
+    const fl = sim && sim.geom && sim.geom.flight;
+    if (fl) {
+      const L = cur().launch;
+      const a = Math.abs(an.bodies[0].a);
+      h += '<section><h3>' + step++ + '. Down the ramp</h3><p>Starting from rest and sliding d = ' + fmt(L.d) + ' m with |a| = ' + fmt(a) + ' m/s²:</p>' +
+        '<div class="eq">v² = 2·a·d  →  v = √(2 × ' + fmt(a) + ' × ' + fmt(L.d) + ') = ' + fmt(fl.v0) + ' m/s\nt = v / a = ' + fmt(fl.v0) + ' / ' + fmt(a) + ' = ' + fmt(fl.tRamp) + ' s</div>' +
+        '<p>The smooth curve at the bottom turns this velocity horizontal without changing the speed.</p></section>';
+      h += '<section><h3>' + step++ + '. Off the table as a projectile</h3><p>Once it leaves the table, the only force is its weight. Horizontally there is no force, so vₓ stays ' + fmt(fl.v0) +
+        ' m/s. Vertically it starts with v_y = 0 and accelerates down at g.</p>' +
+        '<div class="eq">Time to fall H = ' + fmt(L.H) + ' m:  H = ½·g·t²  →  t = √(2 × ' + fmt(L.H) + ' / ' + fmt(an.g) + ') = ' + fmt(fl.tAir) + ' s\n' +
+        'Landing distance:  x = vₓ·t = ' + fmt(fl.v0) + ' × ' + fmt(fl.tAir) + ' = ' + fmt(fl.R) + ' m\n' +
+        'Landing speed:  v = √(vₓ² + (g·t)²) = √(' + fmt(fl.v0) + '² + ' + fmt(an.g * fl.tAir) + '²) = ' + fmt(fl.vLand) + ' m/s</div></section>';
+    }
     return h;
   }
 
   function renderSolution() {
-    const open = ui.solutionOpen;
+    const locked = mysteryOn() && !ui.revealed;
+    const open = ui.solutionOpen && !locked;
+    $('btn-unlock').hidden = locked;
+    $('solution-lock').querySelector('p').innerHTML = locked
+      ? 'This is a mystery-mass problem. The worked solution opens when you choose <b>Show answers</b>.'
+      : 'Make your predictions first. The worked solution opens after you check your answers or choose <b>Show answers</b>.';
     $('solution-lock').hidden = open;
     $('solution').hidden = !open;
     if (open) $('solution').innerHTML = solutionHTML();
@@ -1774,6 +2187,31 @@
   /* ======================================================================
    * Readouts, status and animation
    * ==================================================================== */
+
+  // Mystery mode hides anything that gives the mass away; launch mode relabels the graphs.
+  function syncModes() {
+    const locked = mysteryOn() && !ui.revealed;
+    const vals = $('chk-fbd-values');
+    vals.disabled = locked;
+    if (locked) {
+      vals.checked = false;
+      ui.showFbdValues = false;
+    }
+    vals.parentElement.title = locked ? 'Hidden in mystery-mass mode until you choose Show answers' : '';
+    const launching = !!(sim && sim.geom && sim.geom.flight);
+    const names = launching ? { x: 'x–t (horizontal)', v: 'vₓ–t', a: 'v_y–t' } : { x: 'Position–time', v: 'Velocity–time', a: 'Acceleration–time' };
+    document.querySelectorAll('[data-graph]').forEach((b) => {
+      b.textContent = names[b.dataset.graph];
+      b.hidden = b.dataset.graph === 'a' && locked && !launching;
+    });
+    if (ui.graph === 'a' && locked && !launching) {
+      ui.graph = 'x';
+      document.querySelectorAll('[data-graph]').forEach((x) => x.classList.toggle('on', x.dataset.graph === 'x'));
+    }
+    $('graph-hint').textContent = launching
+      ? 'Press Play to draw the graph. On the ramp the block speeds up; in the air vₓ stays constant while v_y grows at g.'
+      : 'Press Play to draw the graph for the tracked object. The slope of the velocity–time graph is the acceleration.';
+  }
 
   function renderScenarioTabs() {
     document.querySelectorAll('.scenarios button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.scenario === state.scenario)));
@@ -1806,8 +2244,17 @@
     }
     const m = bodyMotion(ui.track, anim.t);
     $('ro-t').textContent = anim.t.toFixed(2) + ' s';
-    $('ro-d').textContent = fmt(m.s) + ' m';
-    $('ro-v').textContent = fmt(m.v) + ' m/s';
+    if (m.air !== undefined) {
+      $('ro-d-label').textContent = m.air ? 'Distance from edge' : 'Displacement';
+      $('ro-v-label').textContent = m.air ? 'Speed' : 'Velocity';
+      $('ro-d').textContent = fmt(m.air ? m.x : m.s) + ' m';
+      $('ro-v').textContent = fmt(m.air ? m.speed : m.v) + ' m/s';
+    } else {
+      $('ro-d-label').textContent = 'Displacement';
+      $('ro-v-label').textContent = 'Velocity';
+      $('ro-d').textContent = fmt(m.s) + ' m';
+      $('ro-v').textContent = fmt(m.v) + ' m/s';
+    }
     $('ro-d').title = plusWord();
     $('ro-v').title = plusWord();
   }
@@ -1836,7 +2283,7 @@
         let msg = (sim.reason ? sim.reason : 'Stopped') + ' at t = ' + sim.tStop.toFixed(2) + ' s.';
         if (analysis.kind === 'chain') {
           const slack = analysis.links.filter((l) => !l.engaged && !l.indeterminate);
-          if (slack.length) msg += ' ' + slack.map((l) => (l.type === 'string' ? 'A string went slack.' : 'Two blocks separated.')).filter((x, i, a) => a.indexOf(x) === i).join(' ');
+          if (slack.length) msg += ' ' + slack.map((l) => (l.type === 'string' ? 'A string went slack.' : l.type === 'stack' ? 'The top block slipped.' : 'Two blocks separated.')).filter((x, i, a) => a.indexOf(x) === i).join(' ');
         }
         st.textContent = msg + ' Press Reset to run it again.';
       }
@@ -1983,8 +2430,13 @@
       ui.revealed = true;
       ui.solutionOpen = true;
       gradeAll(true);
+      syncModes();
       renderSolution();
       renderLegendAndPairs();
+      if (mysteryOn()) {
+        drawScene();
+        drawFBD();
+      }
     });
     $('btn-clear').addEventListener('click', () => {
       ui.pred = {};

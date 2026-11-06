@@ -61,8 +61,8 @@
         <div class="canvas-wrap"><canvas id="scene" aria-label="Animation of the system"></canvas></div>
         <div class="readouts">
           <div class="readout"><span class="rl">Time</span><span class="rv" id="ro-t">0.00 s</span></div>
-          <div class="readout"><span class="rl">Displacement</span><span class="rv" id="ro-d">0.00 m</span></div>
-          <div class="readout"><span class="rl">Velocity</span><span class="rv" id="ro-v">0.00 m/s</span></div>
+          <div class="readout"><span class="rl" id="ro-d-label">Displacement</span><span class="rv" id="ro-d">0.00 m</span></div>
+          <div class="readout"><span class="rl" id="ro-v-label">Velocity</span><span class="rv" id="ro-v">0.00 m/s</span></div>
           <label class="readout track">
             <span class="rl">Tracking</span>
             <select id="sel-track"></select>
@@ -111,7 +111,7 @@
             <button type="button" data-graph="v">Velocity–time</button>
             <button type="button" data-graph="a">Acceleration–time</button>
           </div>
-          <p class="hint">Press Play to draw the graph for the tracked object. The slope of the velocity–time graph is the acceleration.</p>
+          <p class="hint" id="graph-hint">Press Play to draw the graph for the tracked object. The slope of the velocity–time graph is the acceleration.</p>
         </div>
         <div class="graph-wrap"><canvas id="graph" aria-label="Motion graph"></canvas></div>
       </div>

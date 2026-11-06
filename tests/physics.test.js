@@ -173,3 +173,55 @@ test('a closed loop of connections is reported', () => {
   });
   assert.equal(r.ok, false);
 });
+
+const stack = (base, m, mus, muk) => ({ base, m, mus, muk });
+
+test('stacked block rides along when static friction is enough', () => {
+  // pull the bottom block (4 kg) with 10 N; top 1 kg, mu_s = 0.5
+  const r = P.solveChain({ theta: 0, g, friction: false, blocks: [block(4)], links: [], stack: stack(0, 1, 0.5, 0.3), applied: { F: 10, angle: 0, block: 0 } });
+  close(r.bodies[0].a, 2);
+  close(r.bodies[1].a, 2);
+  const l = r.links[0];
+  assert.ok(l.engaged);
+  close(l.Fs, 2); // friction on top = m_top a
+  close(r.bodies[0].N, 5 * g); // table holds up both
+});
+
+test('stacked block slips when the pull is too large', () => {
+  const r = P.solveChain({ theta: 0, g, friction: false, blocks: [block(4)], links: [], stack: stack(0, 1, 0.5, 0.3), applied: { F: 40, angle: 0, block: 0 } });
+  const l = r.links[0];
+  assert.equal(l.engaged, false);
+  close(r.bodies[1].a, 0.3 * g); // top dragged by kinetic friction
+  close(r.bodies[0].a, (40 - 0.3 * g) / 4);
+  close(l.Fs, 0.3 * g);
+  close(l.test.need, 8); // would need m_top * (40/5)
+});
+
+test('pulling the top block drags the bottom one; table friction included', () => {
+  const r = P.solveChain({ theta: 0, g, friction: true, blocks: [block(4, 0.1, 0.1)], links: [], stack: stack(0, 2, 0.6, 0.4), applied: { F: 30, angle: 0, block: 'top' } });
+  // together: a = (30 - 0.1*6g)/6 = 4.02; top needs 30 - 2a = 21.96 > 0.6*2g = 11.76 -> slips
+  const l = r.links[0];
+  assert.equal(l.engaged, false);
+  close(r.bodies[1].a, (30 - 0.4 * 2 * g) / 2);
+  close(r.bodies[0].a, (0.4 * 2 * g - 0.1 * 6 * g) / 4);
+});
+
+test('bottom block held by table friction while the top block slips', () => {
+  const r = P.solveChain({ theta: 0, g, friction: true, blocks: [block(4, 0.5, 0.4)], links: [], stack: stack(0, 2, 0.3, 0.2), applied: { F: 30, angle: 0, block: 'top' } });
+  close(r.bodies[0].a, 0);
+  close(r.bodies[1].a, (30 - 0.2 * 2 * g) / 2);
+});
+
+test('stacked blocks slide down a frictionless incline together', () => {
+  const r = P.solveChain({ theta: 30, g, friction: false, blocks: [block(3)], links: [], stack: stack(0, 1, 0.5, 0.4) });
+  close(r.bodies[0].a, -g / 2);
+  close(r.bodies[1].a, -g / 2);
+  close(r.links[0].F, 0);
+});
+
+test('projectile launch from the ramp', () => {
+  const L = P.launch({ a: 4, d: 2, H: 1.2, g });
+  close(L.v0, 4);
+  close(L.tAir, Math.sqrt(2.4 / g));
+  close(L.R, 4 * Math.sqrt(2.4 / g));
+});
