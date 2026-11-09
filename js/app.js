@@ -36,7 +36,7 @@
         applied: { on: false, F: 20, angle: 0, block: 0 },
         longString: false,
         stack: { on: false, base: 0, m: 1, mus: 0.5, muk: 0.4 },
-        launch: { on: false, d: 2, H: 1 },
+        launch: { on: false, d: 2, H: 1, phi: 0 },
         mystery: { on: false, target: 'b0' },
       },
       o
@@ -362,7 +362,11 @@
         if (c.launch.on && !why) {
           h += numField('Distance slid down the ramp, d', 'launch.d', c.launch.d, 'm', { min: 0.2, max: 5, step: 0.1 });
           h += numField('Table height, H', 'launch.H', c.launch.H, 'm', { min: 0.1, max: 3, step: 0.1 });
-          h += '<p class="note">A smooth curve at the bottom turns the block horizontal without changing its speed. Then it falls as a projectile. Fₐ stops acting once the block leaves the ramp.</p>';
+          h += numField('Launch angle φ (above horizontal)', 'launch.phi', c.launch.phi || 0, '°', { min: 0, max: 75, step: 1 });
+          h += '<p class="note">' + ((c.launch.phi || 0) > 0
+            ? 'A small kicker ramp at the bottom turns the block to φ above the horizontal without changing its speed. Its size is small enough to ignore.'
+            : 'A smooth curve at the bottom turns the block horizontal without changing its speed.') +
+            ' Then it flies as a projectile. Fₐ stops acting once the block leaves the ramp.</p>';
         }
         h += '</div>';
       }
@@ -497,7 +501,7 @@
       const other = el.type === 'range' ? $('in-incline-theta') : $('rng-theta');
       if (other) other.value = v;
     }
-    if (/mu[sk]$/.test(path) && e.type === 'change') renderControls();
+    if ((/mu[sk]$/.test(path) || path === 'launch.phi') && e.type === 'change') renderControls();
     changed();
   }
 
@@ -561,6 +565,7 @@
       if (state.scenario === 'incline') {
         c.launch.d = r(1, 3, 0.1);
         c.launch.H = r(0.5, 1.5, 0.1);
+        if (c.launch.phi > 0) c.launch.phi = r(10, 50, 5);
       }
     }
     ui.pred = {};
@@ -653,7 +658,7 @@
             mus: num(st.mus, 0.5, 0, 2),
             muk: num(st.muk, 0.4, 0, 2),
           },
-          launch: { on: !!la.on, d: num(la.d, 2, 0.2, 5), H: num(la.H, 1, 0.1, 3) },
+          launch: { on: !!la.on, d: num(la.d, 2, 0.2, 5), H: num(la.H, 1, 0.1, 3), phi: num(la.phi, 0, 0, 75) },
           mystery,
         };
       }
@@ -804,7 +809,7 @@
     let fl = null;
     if (L) {
       const b = blocks[0];
-      fl = P.launch({ a: Math.max(0, -b.a), d: L.d, H: L.H, g: an.g });
+      fl = P.launch({ a: Math.max(0, -b.a), d: L.d, H: L.H, g: an.g, phi: L.phi || 0 });
       geom.flight = fl;
     }
 
@@ -812,7 +817,7 @@
     if (fl) xs0.push(fl.R + 0.4);
     const xMin = Math.min(...xs0);
     const xMax = Math.max(...xs0);
-    const top = Math.max(E.y + h + (topBody ? ht : 0) + 0.4, hangBody ? geom.C.y + 0.3 : 0, 0.9);
+    const top = Math.max(E.y + h + (topBody ? ht : 0) + 0.4, hangBody ? geom.C.y + 0.3 : 0, fl ? H + h + fl.hMax + 0.35 : 0, 0.9);
     geom.bbox = { x0: xMin - (dirX > 0 ? 0.75 : 0.4), x1: xMax + (dirX > 0 ? 0.35 : 0.6), y0: -0.12, y1: top + 0.25 };
 
     const tRamp = fl ? fl.tRamp : Infinity;
@@ -824,7 +829,7 @@
       let air = null;
       if (fl && t > tRamp) {
         const tau = t - tRamp;
-        air = { x: S0.x + fl.v0 * tau, y: H + h / 2 - 0.5 * an.g * tau * tau, tau };
+        air = { x: S0.x + fl.vx * tau, y: H + h / 2 + fl.vy0 * tau - 0.5 * an.g * tau * tau, tau };
       }
       return { xs, d, xt, air };
     };
@@ -875,7 +880,8 @@
         return { s: 0.5 * a * t * t, v: a * t, a, x: -sAlong * Math.cos(th), vx: sp * Math.cos(th), vy: -sp * Math.sin(th), air: false, speed: sp };
       }
       const tau = t - fl.tRamp;
-      return { s: 0, v: 0, a: 0, x: fl.v0 * tau, vx: fl.v0, vy: -analysis.g * tau, air: true, speed: Math.hypot(fl.v0, analysis.g * tau) };
+      const vy = fl.vy0 - analysis.g * tau;
+      return { s: 0, v: 0, a: 0, x: fl.vx * tau, vx: fl.vx, vy, air: true, speed: Math.hypot(fl.vx, vy) };
     }
     return { s: 0.5 * a * t * t, v: a * t, a };
   }
@@ -1202,14 +1208,65 @@
       poly([[left, g.H], [g.S0.x, g.H], [g.S0.x, g.H - slab], [left, g.H - slab]]);
       for (const lx of [left + 0.08, g.S0.x - 0.16]) poly([[lx, g.H - slab], [lx + 0.08, g.H - slab], [lx + 0.08, 0], [lx, 0]]);
       if (g.th > 0) poly([[g.S0.x, g.S0.y], [g.E.x, g.H], [g.E.x, g.E.y]]);
-      // smooth lip at the bottom
-      ctx.strokeStyle = C.ink;
-      ctx.lineWidth = 1.2;
+      const phiDeg = g.flight ? g.flight.phi : 0;
       const [lx2, ly2] = P(g.S0.x, g.S0.y);
-      ctx.beginPath();
-      ctx.moveTo(lx2 - 10, ly2 - 10 * Math.tan(g.th));
-      ctx.quadraticCurveTo(lx2 - 4, ly2, lx2, ly2);
-      ctx.stroke();
+      if (phiDeg > 0) {
+        // a small kicker ramp: curves up from the slope to the launch angle at the table edge
+        const ph = phiDeg * DEG;
+        const len = 0.2;
+        const back = 0.28;
+        const start = { x: g.S0.x - back * Math.cos(g.th), y: g.S0.y + back * Math.sin(g.th) };
+        const tip = { x: g.S0.x + len * Math.cos(ph), y: g.S0.y + len * Math.sin(ph) };
+        const ctrl = { x: g.S0.x - 0.02, y: g.S0.y };
+        const [sx, sy] = P(start.x, start.y);
+        const [cx2, cy2] = P(ctrl.x, ctrl.y);
+        const [tx2, ty2] = P(tip.x, tip.y);
+        const [, baseY] = P(0, g.H);
+        ctx.fillStyle = C['bench-edge'];
+        ctx.strokeStyle = C.ink;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.quadraticCurveTo(cx2, cy2, tx2, ty2);
+        ctx.lineTo(tx2, baseY);
+        ctx.lineTo(sx, baseY);
+        ctx.closePath();
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.quadraticCurveTo(cx2, cy2, tx2, ty2);
+        ctx.stroke();
+        // launch angle marker
+        ctx.save();
+        ctx.strokeStyle = C.muted;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(tx2, ty2);
+        ctx.lineTo(tx2 + 0.45 * view.k, ty2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(tx2, ty2);
+        ctx.lineTo(tx2 + 0.45 * view.k * Math.cos(ph), ty2 - 0.45 * view.k * Math.sin(ph));
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.arc(tx2, ty2, 0.3 * view.k, -ph, 0);
+        ctx.stroke();
+        ctx.restore();
+        ctx.fillStyle = C.ink;
+        ctx.font = '600 15px ' + C.fontMono;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('φ = ' + trimNum(phiDeg) + '°', tx2 + 0.34 * view.k * Math.cos(ph / 2) + 4, ty2 - 0.34 * view.k * Math.sin(ph / 2) - 6);
+      } else {
+        // smooth lip at the bottom
+        ctx.strokeStyle = C.ink;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(lx2 - 10, ly2 - 10 * Math.tan(g.th));
+        ctx.quadraticCurveTo(lx2 - 4, ly2, lx2, ly2);
+        ctx.stroke();
+      }
     } else if (g.th === 0) {
       const slab = 0.08;
       poly([[0, g.H], [g.E.x, g.H], [g.E.x, g.H - slab], [0, g.H - slab]]);
@@ -1957,7 +2014,12 @@
     const fl = sim && sim.geom && sim.geom.flight;
     if (fl) {
       q.push({ key: 'tRamp', group: 'launch', label: 'Time to slide down the ramp', unit: 's', value: fl.tRamp });
-      q.push({ key: 'v0', group: 'launch', label: 'Speed at the bottom of the ramp', sub: 'the speed it leaves the table with, horizontally', unit: 'm/s', value: fl.v0 });
+      q.push({ key: 'v0', group: 'launch', label: 'Speed at the bottom of the ramp', sub: fl.phi > 0 ? 'the speed it leaves the table with, at angle φ' : 'the speed it leaves the table with, horizontally', unit: 'm/s', value: fl.v0 });
+      if (fl.phi > 0) {
+        q.push({ key: 'vx', group: 'launch', label: 'Horizontal part of the launch velocity, vₓ', unit: 'm/s', value: fl.vx });
+        q.push({ key: 'vy0', group: 'launch', label: 'Vertical part of the launch velocity, v_y', unit: 'm/s', value: fl.vy0 });
+        q.push({ key: 'hMax', group: 'launch', label: 'Highest point above the table', unit: 'm', value: fl.hMax });
+      }
       q.push({ key: 'tAir', group: 'launch', label: 'Time in the air', unit: 's', value: fl.tAir });
       q.push({ key: 'R', group: 'launch', label: 'Landing distance from the table edge', sub: 'horizontal distance', unit: 'm', value: fl.R });
       q.push({ key: 'vLand', group: 'launch', label: 'Speed just before it lands', unit: 'm/s', value: fl.vLand });
@@ -2245,12 +2307,29 @@
       const a = Math.abs(an.bodies[0].a);
       h += '<section><h3>' + step++ + '. Down the ramp</h3><p>Starting from rest and sliding d = ' + fmt(L.d) + ' m with |a| = ' + fmt(a) + ' m/s²:</p>' +
         '<div class="eq">v² = 2·a·d  →  v = √(2 × ' + fmt(a) + ' × ' + fmt(L.d) + ') = ' + fmt(fl.v0) + ' m/s\nt = v / a = ' + fmt(fl.v0) + ' / ' + fmt(a) + ' = ' + fmt(fl.tRamp) + ' s</div>' +
-        '<p>The smooth curve at the bottom turns this velocity horizontal without changing the speed.</p></section>';
-      h += '<section><h3>' + step++ + '. Off the table as a projectile</h3><p>Once it leaves the table, the only force is its weight. Horizontally there is no force, so vₓ stays ' + fmt(fl.v0) +
-        ' m/s. Vertically it starts with v_y = 0 and accelerates down at g.</p>' +
-        '<div class="eq">Time to fall H = ' + fmt(L.H) + ' m:  H = ½·g·t²  →  t = √(2 × ' + fmt(L.H) + ' / ' + fmt(an.g) + ') = ' + fmt(fl.tAir) + ' s\n' +
-        'Landing distance:  x = vₓ·t = ' + fmt(fl.v0) + ' × ' + fmt(fl.tAir) + ' = ' + fmt(fl.R) + ' m\n' +
-        'Landing speed:  v = √(vₓ² + (g·t)²) = √(' + fmt(fl.v0) + '² + ' + fmt(an.g * fl.tAir) + '²) = ' + fmt(fl.vLand) + ' m/s</div></section>';
+        (fl.phi > 0
+          ? '<p>The small kicker ramp turns this velocity to φ = ' + trimNum(fl.phi) + '° above the horizontal without changing the speed (its size is ignored).</p></section>'
+          : '<p>The smooth curve at the bottom turns this velocity horizontal without changing the speed.</p></section>');
+      if (fl.phi > 0) {
+        const vy0 = fl.vy0;
+        h += '<section><h3>' + step++ + '. Split the launch velocity into parts</h3>' +
+          '<div class="eq">vₓ = v cos φ = ' + fmt(fl.v0) + ' × cos ' + trimNum(fl.phi) + '° = ' + fmt(fl.vx) + ' m/s\nv_y = v sin φ = ' + fmt(fl.v0) + ' × sin ' + trimNum(fl.phi) + '° = ' + fmt(vy0) + ' m/s</div></section>';
+        h += '<section><h3>' + step++ + '. Off the table as a projectile</h3><p>Once it leaves the table, the only force is its weight. Horizontally there is no force, so vₓ stays ' + fmt(fl.vx) +
+          ' m/s. Vertically it starts upward at v_y = ' + fmt(vy0) + ' m/s and accelerates down at g. Take up as + and the table top as y = 0, so the floor is at y = −H.</p>' +
+          '<div class="eq">Highest point:  v_y² = 2·g·Δy  →  Δy = ' + fmt(vy0) + '² / (2 × ' + fmt(an.g) + ') = ' + fmt(fl.hMax) + ' m above the table\n' +
+          'Time in the air:  −H = v_y·t − ½·g·t²\n' +
+          '   →  ½·g·t² − v_y·t − H = 0\n' +
+          '   →  t = (v_y + √(v_y² + 2·g·H)) / g = (' + fmt(vy0) + ' + √(' + fmt(vy0) + '² + 2 × ' + fmt(an.g) + ' × ' + fmt(L.H) + ')) / ' + fmt(an.g) + ' = ' + fmt(fl.tAir) + ' s\n' +
+          'Landing distance:  x = vₓ·t = ' + fmt(fl.vx) + ' × ' + fmt(fl.tAir) + ' = ' + fmt(fl.R) + ' m\n' +
+          'Landing speed:  v = √(v² + 2·g·H) = √(' + fmt(fl.v0) + '² + 2 × ' + fmt(an.g) + ' × ' + fmt(L.H) + ') = ' + fmt(fl.vLand) + ' m/s</div>' +
+          '<p>The landing speed only depends on the launch speed and the drop height, not on φ (energy is conserved in flight).</p></section>';
+      } else {
+        h += '<section><h3>' + step++ + '. Off the table as a projectile</h3><p>Once it leaves the table, the only force is its weight. Horizontally there is no force, so vₓ stays ' + fmt(fl.v0) +
+          ' m/s. Vertically it starts with v_y = 0 and accelerates down at g.</p>' +
+          '<div class="eq">Time to fall H = ' + fmt(L.H) + ' m:  H = ½·g·t²  →  t = √(2 × ' + fmt(L.H) + ' / ' + fmt(an.g) + ') = ' + fmt(fl.tAir) + ' s\n' +
+          'Landing distance:  x = vₓ·t = ' + fmt(fl.v0) + ' × ' + fmt(fl.tAir) + ' = ' + fmt(fl.R) + ' m\n' +
+          'Landing speed:  v = √(vₓ² + (g·t)²) = √(' + fmt(fl.v0) + '² + ' + fmt(an.g * fl.tAir) + '²) = ' + fmt(fl.vLand) + ' m/s</div></section>';
+      }
     }
     return h;
   }
@@ -3639,7 +3718,7 @@
     });
     controls.addEventListener('change', (e) => {
       if (e.target.type === 'checkbox' || e.target.tagName === 'SELECT') onControlInput(e);
-      else if (/mu[sk]$/.test(e.target.dataset.path || '')) onControlInput(e);
+      else if (/mu[sk]$|^launch\.phi$/.test(e.target.dataset.path || '')) onControlInput(e);
     });
     controls.addEventListener('click', onControlClick);
 

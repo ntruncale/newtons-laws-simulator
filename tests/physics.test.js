@@ -270,3 +270,18 @@ test('jumping, landing and sprint start', () => {
   close(s.a, 3.2);
   close(s.f, 224);
 });
+
+test('angled launch off the table', () => {
+  const L = P.launch({ a: 4, d: 2, H: 1.2, g, phi: 30 });
+  close(L.v0, 4);
+  close(L.vx, 4 * Math.cos(30 * P.DEG));
+  close(L.vy0, 2);
+  const t = (2 + Math.sqrt(4 + 2 * g * 1.2)) / g;
+  close(L.tAir, t);
+  close(L.R, 4 * Math.cos(30 * P.DEG) * t);
+  close(L.hMax, 4 / (2 * g));
+  close(L.vLand, Math.sqrt(16 + 2 * g * 1.2));
+  // phi = 0 matches the horizontal launch
+  const L0 = P.launch({ a: 4, d: 2, H: 1.2, g, phi: 0 });
+  close(L0.tAir, Math.sqrt(2.4 / g));
+});

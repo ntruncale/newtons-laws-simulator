@@ -31,7 +31,7 @@ On every surface you can:
 - **Free-body diagrams**: one diagram per object. Forces from the same string or contact share a color, and the action–reaction pairs are explained below the diagrams, including why W and N on the same block are *not* a third-law pair.
 - **Motion graph**: position–, velocity– and acceleration–time graphs for any object, drawn as it moves.
 - **Worked solution**: a step-by-step solution using the student's numbers. It stays locked until the student checks their answers or chooses *Show answers*.
-- **Launch off the table** (inclined plane): the block slides a distance d down the ramp, a smooth lip turns it horizontal, and it falls a height H as a projectile. Students predict the launch speed, time in the air and landing distance; the graph shows x, vₓ and v_y against time.
+- **Launch off the table** (inclined plane): the block slides a distance d down the ramp, then a smooth lip turns it horizontal (or a small kicker ramp turns it to a launch angle φ you choose), and it flies off a table of height H as a projectile. The kicker's size is ignored in the solution. Students predict the launch speed, time in the air and landing distance; the graph shows x, vₓ and v_y against time.
 - **Mystery mass**: one mass is hidden. Students measure the motion with the clock, ruler, readouts and graphs, then work out the mass (5% tolerance). Force values, the acceleration graph and the worked solution stay hidden until *Show answers*.
 - **Motion dots** leave a mark every 0.1 s so students can see the spacing grow, and the meter-stick scale lets them measure distances.
 

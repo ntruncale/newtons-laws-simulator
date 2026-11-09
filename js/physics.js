@@ -359,15 +359,32 @@
   }
 
   /*
-   * A block slides from rest a distance d down a ramp with acceleration a (magnitude),
-   * a smooth lip turns it horizontal at the table edge, and it falls a height H.
+   * A block slides from rest a distance d down a ramp with acceleration a (magnitude).
+   * At the table edge a smooth lip (or a small kicker ramp) turns its velocity to
+   * phi degrees above the horizontal without changing its speed, and it falls to a floor H below.
+   * The lip's own size is ignored.
    */
-  function launch({ a, d, H, g }) {
+  function launch({ a, d, H, g, phi = 0 }) {
     if (!(a > 0) || !(d > 0)) return null;
     const tRamp = Math.sqrt((2 * d) / a);
     const v0 = a * tRamp;
-    const tAir = Math.sqrt((2 * H) / g);
-    return { tRamp, v0, tAir, R: v0 * tAir, vLand: Math.hypot(v0, g * tAir) };
+    const ang = phi * DEG;
+    const vx = v0 * Math.cos(ang);
+    const vy0 = v0 * Math.sin(ang);
+    // H + vy0 t - g t^2 / 2 = 0
+    const tAir = (vy0 + Math.sqrt(vy0 * vy0 + 2 * g * H)) / g;
+    return {
+      tRamp,
+      v0,
+      phi,
+      vx,
+      vy0,
+      tAir,
+      R: vx * tAir,
+      hMax: (vy0 * vy0) / (2 * g), // highest point above the table
+      tPeak: vy0 / g,
+      vLand: Math.sqrt(v0 * v0 + 2 * g * H),
+    };
   }
 
   /* ---------- Elevator: a person on a scale ---------- */
