@@ -1,11 +1,11 @@
 /* Layout: a lab bench. Setup on the left, the apparatus and analysis on the right; stacks on phones.
    Black background by default for easy reading; the header button switches to a light background. */
 :root {
-  --bg: #000000;
-  --panel: #111317;
+  --bg: #282b31;
+  --panel: #1a1d22;
   --ink: #f4f6fa;
   --muted: #c3cad5;
-  --line: #313845;
+  --line: #3b4250;
   --accent: #7cb4ff;
   --accent-ink: #000000;
   --accent-soft: #1b2b47;
