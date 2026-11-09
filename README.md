@@ -65,3 +65,7 @@ node --test
 - `js/physics.js`: physics engine (no DOM, unit-tested)
 - `js/app.js`: controls, animation, diagrams, graphs, checking and worked solutions
 - `tests/physics.test.js`: tests against textbook results
+
+## Updating the site
+
+`index.html` loads the CSS and JavaScript with a version tag (for example `css/style.css?v=202611091530`). When you change those files, update the tag so browsers download the new copies instead of using old cached ones.
