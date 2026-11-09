@@ -572,7 +572,28 @@
     return { at: F / mt, ac: F / mcar };
   }
 
-  const Physics = { DEG, solveAtwood, solveChain, buildChain, linkSigns, launch, solveElevator, solveTraction, solveBody, solveTrafficLight, solveWall, labTrial, fitLine, solveHorseCart, solveTug, solveCrash };
+  /* ---------- Accelerometer: an ornament hanging in an accelerating car ---------- */
+  /** a: the car's acceleration (+ forward). The string tilts back by theta from vertical. */
+  function solveCarAccel({ a, g, m }) {
+    return { a, g, m, theta: Math.atan2(Math.abs(a), g) / DEG, T: m * Math.hypot(g, a), Fnet: m * Math.abs(a), W: m * g };
+  }
+
+  /* ---------- Tilt-the-ramp friction lab ---------- */
+  /** The ramp is raised until the block slips (tan theta = mus), then it slides a distance d. */
+  function tiltLab({ mus, muk, g, d }) {
+    const th = Math.atan(mus);
+    const a = g * (Math.sin(th) - muk * Math.cos(th));
+    return { thetaC: th / DEG, a, t: a > 0 ? Math.sqrt((2 * d) / a) : Infinity };
+  }
+
+  /* ---------- Block and tackle ---------- */
+  /** n rope segments hold the moving pulley block; a is the load's upward acceleration. */
+  function solveTackle({ m, n, g, a = 0 }) {
+    const T = (m * (g + a)) / n;
+    return { m, n, g, a, W: m * g, T, ceiling: (n + 1) * T, MA: n };
+  }
+
+  const Physics = { DEG, solveAtwood, solveChain, buildChain, linkSigns, launch, solveElevator, solveTraction, solveBody, solveTrafficLight, solveWall, labTrial, fitLine, solveHorseCart, solveTug, solveCrash, solveCarAccel, tiltLab, solveTackle };
   if (typeof module !== 'undefined' && module.exports) module.exports = Physics;
   else global.Physics = Physics;
 })(typeof window !== 'undefined' ? window : globalThis);

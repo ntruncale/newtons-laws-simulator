@@ -334,3 +334,28 @@ test('third-law puzzles', () => {
   close(c.at, 10);
   close(c.ac, 50);
 });
+
+test('accelerometer in a car', () => {
+  const r = P.solveCarAccel({ a: 3, g, m: 0.2 });
+  close(r.theta, Math.atan(3 / g) / P.DEG);
+  close(r.T, 0.2 * Math.hypot(g, 3));
+  close(r.Fnet, 0.6);
+});
+
+test('tilt-the-ramp friction lab', () => {
+  const r = P.tiltLab({ mus: 0.6, muk: 0.45, g, d: 1 });
+  close(Math.tan(r.thetaC * P.DEG), 0.6);
+  const th = Math.atan(0.6);
+  close(r.a, g * (Math.sin(th) - 0.45 * Math.cos(th)));
+  // recover muk from the measured slide, the way students do
+  const a = 2 / (r.t * r.t);
+  close(Math.tan(th) - a / (g * Math.cos(th)), 0.45);
+});
+
+test('block and tackle', () => {
+  const r = P.solveTackle({ m: 120, n: 4, g });
+  close(r.T, 120 * g / 4);
+  close(r.ceiling, 5 * 120 * g / 4);
+  const up = P.solveTackle({ m: 120, n: 3, g, a: 0.5 });
+  close(up.T, 120 * (g + 0.5) / 3);
+});
