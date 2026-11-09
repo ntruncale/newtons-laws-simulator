@@ -4095,7 +4095,7 @@
       const an = analysis;
       const s = an.a > 0 ? 0.5 * an.a * Math.min(t, an.t) ** 2 : 0;
       const tableY = 1.55;
-      const view = fitView({ x0: -0.5, x1: 2.75, y0: -0.12, y1: 2.2 }, W, H);
+      const view = fitView({ x0: -0.5, x1: 2.85, y0: -0.12, y1: 2.2 }, W, H);
       const P = view.P;
       drawGrid(ctx, W, H, view);
       drawFloor(ctx, view, -0.5, 2.75);
@@ -4121,8 +4121,21 @@
       }
       dimH(ctx, view, g1, g2, tableY + 0.42, fmt(LAB_D) + ' m', C.accent);
       // pulley at the table edge
-      const pc = { x: 2.3, y: tableY + 0.1 };
       const rp = 0.06;
+      const hookY = tableY + 0.09; // where the string ties to the cart
+      const pc = { x: 2.4, y: hookY - rp }; // top of the pulley is level with the hook
+      // clamp holding the pulley at the table edge
+      boxW(ctx, view, 2.3, tableY - 0.12, 2.34, tableY + 0.02, C['bench-edge']);
+      ctx.save();
+      ctx.strokeStyle = C['bench-edge'];
+      ctx.lineWidth = 3;
+      const [ax1, ay1] = P(2.32, tableY - 0.02);
+      const [ax2, ay2] = P(pc.x, pc.y);
+      ctx.beginPath();
+      ctx.moveTo(ax1, ay1);
+      ctx.lineTo(ax2, ay2);
+      ctx.stroke();
+      ctx.restore();
       // cart
       const cw = 0.32;
       const front = g1 + s;
@@ -4139,7 +4152,7 @@
       ctx.save();
       ctx.strokeStyle = C.ink;
       ctx.lineWidth = 1.6;
-      const [sx, sy] = P(front, tableY + 0.09);
+      const [sx, sy] = P(front, hookY);
       const [px, py] = P(pc.x, pc.y);
       ctx.beginPath();
       ctx.moveTo(sx, sy);
@@ -4320,14 +4333,27 @@
     ctx.restore();
   }
   // a figure pulling on a rope; dir = +1 faces right, -1 faces left
-  function puller(ctx, view, xFeet, dir, swing) {
-    const pose = poseUpright({ x: 0, yHip: STAND_HIP - 0.16, contact: true, armA: 1.45, lean: -0.5 });
-    pose.legs[0].ankle.x -= 0.18;
-    pose.legs[0].toe.x -= 0.18;
-    pose.legs[0].knee = ik(pose.hip, pose.legs[0].ankle, FIG.thigh, FIG.shin, 1);
-    const v = { k: view.k, P: (x, y) => view.P(xFeet + dir * x, y + swing) };
+  // dir = +1: faces right (toward the rope) and leans back to the left; -1 is the mirror image.
+  // Returns where both hands grip, so the rope can be drawn through them.
+  function pullerPose() {
+    const pose = poseUpright({ x: 0, yHip: STAND_HIP - 0.18, contact: true, armA: 0.9, lean: -0.62 });
+    // arms nearly straight, reaching forward and down to the rope
+    pose.arms = [0.86, 0.96].map((a) => {
+      const elbow = vadd(pose.shoulder, polar(FIG.upper, a));
+      return { elbow, hand: vadd(elbow, polar(FIG.fore, a + 0.12)) };
+    });
+    // front foot braced forward, toward the rope
+    const front = pose.legs[1];
+    front.ankle.x += 0.22;
+    front.toe.x += 0.22;
+    front.knee = ik(pose.hip, front.ankle, FIG.thigh, FIG.shin, 1);
+    return pose;
+  }
+  function puller(ctx, view, xFeet, dir) {
+    const pose = pullerPose();
+    const v = { k: view.k, P: (x, y) => view.P(xFeet + dir * x, y) };
     drawFigure(ctx, v, pose);
-    return { x: xFeet + dir * pose.arms[1].hand.x, y: pose.arms[1].hand.y };
+    return pose.arms.map((a) => ({ x: xFeet + dir * a.hand.x, y: a.hand.y }));
   }
   const PUZ = {
     defaults: () => ({
@@ -4466,10 +4492,10 @@
       const an = analysis;
       const s = 0.5 * an.a * t * t; // + toward team A (left)
       const shift = -s;
-      const view = fitView({ x0: -5, x1: 5, y0: -0.4, y1: 2.3 }, W, H);
+      const view = fitView({ x0: -5.6, x1: 5.6, y0: -0.4, y1: 2.2 }, W, H);
       const P = view.P;
       drawGrid(ctx, W, H, view);
-      drawFloor(ctx, view, -5, 5);
+      drawFloor(ctx, view, -5.6, 5.6);
       // centre line and the rope's flag
       const [cx0, cy0] = P(0, 0);
       const [, cy1] = P(0, 0.4);
@@ -4482,18 +4508,36 @@
       ctx.stroke();
       ctx.restore();
       // teams: two figures each
-      const handsA = [puller(ctx, view, -2.9 + shift, -1, 0), puller(ctx, view, -1.9 + shift, -1, 0)];
-      const handsB = [puller(ctx, view, 1.9 + shift, 1, 0), puller(ctx, view, 2.9 + shift, 1, 0)];
-      const ry = handsA[1].y;
+      // team A on the left faces right and pulls left; team B mirrors it
+      const hands = [
+        ...puller(ctx, view, -3.2 + shift, 1),
+        ...puller(ctx, view, -2.1 + shift, 1),
+        ...puller(ctx, view, 2.1 + shift, -1),
+        ...puller(ctx, view, 3.2 + shift, -1),
+      ];
+      const ry = hands.reduce((sum, h) => sum + h.y, 0) / hands.length;
+      const xs2 = hands.map((h) => h.x);
       ctx.save();
       ctx.strokeStyle = C['f-f'];
-      ctx.lineWidth = 4;
-      const [l0x, ly] = P(handsA[0].x - 0.2, ry);
-      const [l1x] = P(handsB[1].x + 0.2, ry);
+      ctx.lineWidth = 5;
+      ctx.lineCap = 'round';
+      const [l0x, ly] = P(Math.min(...xs2) - 0.35, ry);
+      const [l1x] = P(Math.max(...xs2) + 0.35, ry);
       ctx.beginPath();
       ctx.moveTo(l0x, ly);
       ctx.lineTo(l1x, ly);
       ctx.stroke();
+      // fists wrapped around the rope
+      ctx.fillStyle = C['fig-skin'];
+      ctx.strokeStyle = C.scene;
+      ctx.lineWidth = 1.5;
+      hands.forEach((h) => {
+        const [hx] = P(h.x, 0);
+        ctx.beginPath();
+        ctx.arc(hx, ly, Math.max(4, 0.055 * view.k), 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.stroke();
+      });
       ctx.restore();
       const [fx, fy] = P(shift, ry);
       ctx.save();
@@ -4505,11 +4549,11 @@
       ctx.closePath();
       ctx.fill();
       ctx.restore();
-      labelText(ctx, 'Team A', P(-2.4 + shift, 0)[0], P(0, 2.05)[1], C.ink, 'center', 15, 700, C.fontBody);
-      labelText(ctx, 'Team B', P(2.4 + shift, 0)[0], P(0, 2.05)[1], C.ink, 'center', 15, 700, C.fontBody);
+      labelText(ctx, 'Team A pulls ←', P(-2.65 + shift, 0)[0], P(0, 1.85)[1], C.ink, 'center', 15, 700, C.fontBody);
+      labelText(ctx, '→ Team B pulls', P(2.65 + shift, 0)[0], P(0, 1.85)[1], C.ink, 'center', 15, 700, C.fontBody);
       const sc = 70 / Math.max(an.FA, an.FB, an.T, 1);
-      forceArrow(ctx, view, { x: -2.6 + shift, y: 0.03 }, -1, 0, Math.max(24, an.FA * sc), C['f-n'], 'ground', 'right');
-      forceArrow(ctx, view, { x: 2.6 + shift, y: 0.03 }, 1, 0, Math.max(24, an.FB * sc), C['f-n'], 'ground', 'left');
+      forceArrow(ctx, view, { x: -2.95 + shift, y: 0.03 }, -1, 0, Math.max(24, an.FA * sc), C['f-n'], 'ground pushes A');
+      forceArrow(ctx, view, { x: 2.95 + shift, y: 0.03 }, 1, 0, Math.max(24, an.FB * sc), C['f-n'], 'ground pushes B');
       labelText(ctx, an.winner === 'tie' ? 'Evenly matched' : 'Team ' + an.winner + ' is winning', 12, 18, C.ink, 'left', 15, 700, C.fontBody);
     },
     drawCrash(ctx, W, H) {
