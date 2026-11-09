@@ -483,7 +483,96 @@
     return { kind: 'body', ok: true, mode: 'sprint', m, g, d, v, W, a, f, N: W, Fground: Math.hypot(f, W), groundAngle: Math.atan2(W, f) / DEG, ratio: f / W, t: v / a };
   }
 
-  const Physics = { DEG, solveAtwood, solveChain, buildChain, linkSigns, launch, solveElevator, solveTraction, solveBody };
+  /* ---------- Equilibrium: a traffic light on two cables ---------- */
+  /** Cable 1 rises to the left at th1, cable 2 to the right at th2 (degrees above horizontal). */
+  function solveTrafficLight({ m, th1, th2, g }) {
+    const W = m * g;
+    const a1 = th1 * DEG;
+    const a2 = th2 * DEG;
+    const s = Math.sin(a1 + a2);
+    if (!(s > 1e-9)) return { kind: 'traffic', ok: false, error: 'At least one cable must slant upward, or nothing can hold the light up.' };
+    const T1 = (W * Math.cos(a2)) / s;
+    const T2 = (W * Math.cos(a1)) / s;
+    return {
+      kind: 'traffic',
+      ok: true,
+      m,
+      g,
+      th1,
+      th2,
+      W,
+      T1,
+      T2,
+      T1x: T1 * Math.cos(a1),
+      T1y: T1 * Math.sin(a1),
+      T2x: T2 * Math.cos(a2),
+      T2y: T2 * Math.sin(a2),
+    };
+  }
+
+  /* ---------- A block pressed against a wall ---------- */
+  /** Push F at phi degrees above the horizontal, into the wall. + is up. */
+  function solveWall({ m, F, phi, mus, muk, g }) {
+    const W = m * g;
+    const p = phi * DEG;
+    const N = F * Math.cos(p);
+    const up = F * Math.sin(p) - W; // vertical forces apart from friction
+    const cap = mus * N;
+    const denomDown = Math.sin(p) + mus * Math.cos(p);
+    const denomUp = Math.sin(p) - mus * Math.cos(p);
+    const Fmin = denomDown > 1e-12 ? W / denomDown : Infinity; // just stops it sliding down
+    const Fmax = denomUp > 1e-12 ? W / denomUp : Infinity; // just starts it sliding up
+    const base = { kind: 'wall', ok: true, m, F, phi, mus, muk: Math.min(muk, mus), g, W, N, Fpar: F * Math.sin(p), Fmin, Fmax };
+    if (Math.abs(up) <= cap + 1e-9) return { ...base, f: -up, fType: up === 0 ? 'none' : 'static', a: 0, state: 'rest' };
+    const dir = Math.sign(up);
+    const fk = base.muk * N;
+    return { ...base, f: -dir * fk, fType: fk > 0 ? 'kinetic' : 'none', a: (up - dir * fk) / m, state: dir > 0 ? 'up' : 'down' };
+  }
+
+  /* ---------- F = ma lab ---------- */
+  /** Total mass M is split between the cart and the hanger (m); f is a constant friction force. */
+  function labTrial({ M, m, f, g, d }) {
+    const F = m * g;
+    const a = Math.max(0, (F - f) / M);
+    return { m, F, a, t: a > 0 ? Math.sqrt((2 * d) / a) : Infinity, T: (M - m) * a + f };
+  }
+  /** Least-squares line y = slope * x + intercept. */
+  function fitLine(pts) {
+    const n = pts.length;
+    if (n < 2) return null;
+    let sx = 0;
+    let sy = 0;
+    let sxx = 0;
+    let sxy = 0;
+    for (const [x, y] of pts) {
+      sx += x;
+      sy += y;
+      sxx += x * x;
+      sxy += x * y;
+    }
+    const den = n * sxx - sx * sx;
+    if (Math.abs(den) < 1e-12) return null;
+    const slope = (n * sxy - sx * sy) / den;
+    return { slope, intercept: (sy - slope * sx) / n };
+  }
+
+  /* ---------- Third-law puzzles ---------- */
+  /** Horse pulls a cart. Fg: the ground's forward push on the horse; fc: friction on the cart. */
+  function solveHorseCart({ mh, mc, Fg, fc }) {
+    const a = Math.max(0, (Fg - fc) / (mh + mc));
+    return { a, T: mc * a + fc, net: (mh + mc) * a };
+  }
+  /** Tug-of-war. Each team pushes on the ground with FA, FB (team A on the left). + = toward A. */
+  function solveTug({ mA, mB, FA, FB }) {
+    const a = (FA - FB) / (mA + mB);
+    return { a, T: FB + mB * a, winner: Math.abs(a) < 1e-12 ? 'tie' : a > 0 ? 'A' : 'B' };
+  }
+  /** Truck and car collide; the force between them has size F during the crash. */
+  function solveCrash({ mt, mcar, F }) {
+    return { at: F / mt, ac: F / mcar };
+  }
+
+  const Physics = { DEG, solveAtwood, solveChain, buildChain, linkSigns, launch, solveElevator, solveTraction, solveBody, solveTrafficLight, solveWall, labTrial, fitLine, solveHorseCart, solveTug, solveCrash };
   if (typeof module !== 'undefined' && module.exports) module.exports = Physics;
   else global.Physics = Physics;
 })(typeof window !== 'undefined' ? window : globalThis);

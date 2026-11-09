@@ -285,3 +285,52 @@ test('angled launch off the table', () => {
   const L0 = P.launch({ a: 4, d: 2, H: 1.2, g, phi: 0 });
   close(L0.tAir, Math.sqrt(2.4 / g));
 });
+
+test('traffic light on two cables', () => {
+  // symmetric: each cable carries W / (2 sin theta)
+  const r = P.solveTrafficLight({ m: 12, th1: 30, th2: 30, g });
+  close(r.T1, (12 * g) / (2 * 0.5));
+  close(r.T2, r.T1);
+  const r2 = P.solveTrafficLight({ m: 10, th1: 37, th2: 53, g });
+  close(r2.T1x, r2.T2x);
+  close(r2.T1y + r2.T2y, 10 * g);
+  assert.equal(P.solveTrafficLight({ m: 1, th1: 0, th2: 0, g }).ok, false);
+});
+
+test('block pressed against a wall', () => {
+  // horizontal push: holds if mus F >= mg
+  const hold = P.solveWall({ m: 2, F: 50, phi: 0, mus: 0.5, muk: 0.4, g });
+  assert.equal(hold.state, 'rest');
+  close(hold.f, 2 * g);
+  close(hold.Fmin, (2 * g) / 0.5);
+  assert.equal(hold.Fmax, Infinity);
+  const slide = P.solveWall({ m: 2, F: 30, phi: 0, mus: 0.5, muk: 0.4, g });
+  assert.equal(slide.state, 'down');
+  close(slide.a, -(2 * g - 0.4 * 30) / 2);
+  // angled push: min and max holding forces
+  const ang = P.solveWall({ m: 2, F: 30, phi: 60, mus: 0.3, muk: 0.2, g });
+  close(ang.Fmin, (2 * g) / (Math.sin(60 * P.DEG) + 0.3 * Math.cos(60 * P.DEG)));
+  close(ang.Fmax, (2 * g) / (Math.sin(60 * P.DEG) - 0.3 * Math.cos(60 * P.DEG)));
+});
+
+test('F = ma lab: F vs a is a line with slope M and intercept f', () => {
+  const pts = [0.05, 0.1, 0.15, 0.2].map((m) => {
+    const tr = P.labTrial({ M: 1.2, m, f: 0.15, g, d: 1 });
+    return [tr.a, tr.F];
+  });
+  const fit = P.fitLine(pts);
+  close(fit.slope, 1.2);
+  close(fit.intercept, 0.15);
+});
+
+test('third-law puzzles', () => {
+  const hc = P.solveHorseCart({ mh: 500, mc: 300, Fg: 1200, fc: 400 });
+  close(hc.a, 1);
+  close(hc.T, 700); // the cart pulls back on the horse with 700 N, less than the ground's 1200 N push
+  const tug = P.solveTug({ mA: 300, mB: 300, FA: 2400, FB: 1800 });
+  assert.equal(tug.winner, 'A');
+  close(tug.T, 1800 + 300 * 1);
+  const c = P.solveCrash({ mt: 6000, mcar: 1200, F: 60000 });
+  close(c.at, 10);
+  close(c.ac, 50);
+});

@@ -44,6 +44,7 @@
   --fig-shoe: #eef1f6;
   --fig-hair: #3a2618;
   --track: #5a2e26;
+  --horse: #b27b48;
 
   --font-display: 'Bricolage Grotesque', 'Segoe UI', system-ui, sans-serif;
   --font-body: 'Atkinson Hyperlegible', 'Segoe UI', system-ui, -apple-system, sans-serif;
@@ -91,6 +92,7 @@
   --fig-shoe: #1d2433;
   --fig-hair: #3b2a20;
   --track: #c98a6c;
+  --horse: #8a5a2c;
   color-scheme: light;
 }
 
@@ -527,3 +529,19 @@ input[disabled] { color: var(--muted); cursor: not-allowed; }
 @media (max-width: 600px) { .qrow { grid-template-columns: minmax(0, 1fr) 104px 50px; } }
 .fbd-scroll canvas { height: 320px; }
 .field.stack { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+
+/* multiple-choice questions */
+.mcq { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px 8px; margin: 0 0 10px; }
+.mcq legend { font-weight: 700; font-size: 1.02rem; padding: 0 4px; }
+.mc-opt { display: flex; align-items: flex-start; gap: 10px; padding: 5px 2px; cursor: pointer; font-size: 1rem; }
+.mc-opt input { margin-top: 0.3em; accent-color: var(--accent); width: 17px; height: 17px; flex: none; }
+.mc-out { margin: 4px 0 2px; font-size: 0.98rem; min-height: 1.2em; }
+.mcq.good { border-color: var(--good); background: var(--good-soft); }
+.mcq.good .mc-out { color: var(--good); }
+.mcq.bad { border-color: var(--bad); background: var(--bad-soft); }
+.mcq.bad .mc-out { color: var(--bad); }
+/* lab data table */
+#lab-data table.data { border-collapse: collapse; width: 100%; font-size: 0.98rem; font-variant-numeric: tabular-nums; }
+#lab-data th, #lab-data td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+#lab-data th { color: var(--muted); font-size: 0.88rem; }
+#lab-data td:first-child, #lab-data th:first-child { text-align: left; }

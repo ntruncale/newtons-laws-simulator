@@ -14,6 +14,9 @@ It is a static web page: plain HTML, CSS and JavaScript, with no build step and 
 | **Blocks on a surface** | 1–4 blocks on a level surface, optionally with a string from the first block to the last. |
 | **Elevator** | A person on a scale in an elevator: speeding up, slowing down or at constant speed (up or down), a full ride, or free fall. Optional cable tension with the car's mass. |
 | **Human body** | OpenStax-style problems: a leg in traction (pulleys at two angles), jumping, landing from a height, and a sprint start. |
+| **Equilibrium** | A traffic light hanging from two cables at different angles, and a block pressed against a wall (static or sliding, with a push at any angle). |
+| **F = ma lab** | A cart and hanging mass with photogates. Each run is recorded; the F-vs-a graph's slope gives the total mass and its intercept the friction. Optional hidden values with measurement noise. |
+| **Third-law puzzles** | Horse and cart, tug-of-war, truck vs car collision, and book on a table: multiple-choice concept questions plus numbers, with third-law pairs shown. |
 
 On every surface you can:
 

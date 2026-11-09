@@ -19,7 +19,7 @@
     [24.79, 'Jupiter, 24.79 m/s²'],
   ];
   const MAX_BLOCKS = { modified: 3, incline: 3, horizontal: 4 };
-  const SCENARIOS = ['atwood', 'modified', 'incline', 'horizontal', 'elevator', 'body'];
+  const SCENARIOS = ['atwood', 'modified', 'incline', 'horizontal', 'elevator', 'body', 'statics', 'lab', 'puzzles'];
 
   const blk = (m) => ({ m, mus: 0.4, muk: 0.3 });
   function surfaceDefaults(o) {
@@ -56,6 +56,9 @@
       }),
       elevator: ELEV.defaults(),
       body: BODY.defaults(),
+      statics: STATICS.defaults(),
+      lab: LAB.defaults(),
+      puzzles: PUZ.defaults(),
     };
   }
 
@@ -98,7 +101,7 @@
     const c = cur();
     if (sc === 'atwood') return [['m1', 'Mass 1'], ['m2', 'Mass 2']];
     if (sc === 'elevator') return [['person', 'Person']];
-    if (sc === 'body') return [];
+    if (sc === 'body' || sc === 'statics' || sc === 'lab' || sc === 'puzzles') return [];
     const out = c.blocks.map((b, i) => ['b' + i, 'Block ' + (i + 1)]);
     const nb = c.blocks.length;
     const hang = sc === 'modified' || (sc === 'incline' && c.hanging.on);
@@ -467,6 +470,11 @@
         if (el.checked) newMystery();
       }
       if (path === 'stack.on' && !el.checked && c.applied.block === 'top') c.applied.block = 0;
+      if (state.scenario === 'lab' && path === 'hidden') {
+        ui.labSecret = null;
+        ui.labTrials = [];
+        LAB.renderData();
+      }
       renderControls();
       changed();
       return;
@@ -479,7 +487,7 @@
         newMystery();
         renderControls();
       }
-      if (path === 'mode' || path === 'motion') {
+      if (path === 'mode' || path === 'motion' || path === 'p') {
         ui.pred = {};
         ui.solutionOpen = false;
         ui.graph = 'x';
@@ -502,6 +510,11 @@
       if (other) other.value = v;
     }
     if ((/mu[sk]$/.test(path) || path === 'launch.phi') && e.type === 'change') renderControls();
+    if (state.scenario === 'lab' && (path === 'M' || path === 'f') && (ui.labTrials || []).length) {
+      ui.labTrials = [];
+      LAB.renderData();
+      if (e.type === 'change') renderControls();
+    }
     changed();
   }
 
@@ -526,6 +539,14 @@
       c.links[+btn.dataset.index] = btn.dataset.type;
     } else if (act === 'random') {
       randomize();
+    } else if (act === 'newlab') {
+      ui.labSecret = null;
+      ui.labTrials = [];
+      ui.pred = {};
+      LAB.renderData();
+    } else if (act === 'labclear') {
+      ui.labTrials = [];
+      LAB.renderData();
     } else if (act === 'mystery') {
       ui.pred = {};
       newMystery();
@@ -534,6 +555,10 @@
       return;
     } else if (act === 'defaults') {
       state[state.scenario] = defaults()[state.scenario];
+      if (state.scenario === 'lab') {
+        ui.labTrials = [];
+        LAB.renderData();
+      }
       ui.pred = {};
     } else return;
     renderControls();
@@ -614,7 +639,7 @@
       const c = data.c || {};
       const my = c.mystery || {};
       const mystery = { on: !!my.on, target: typeof my.target === 'string' ? my.target : data.scenario === 'atwood' ? 'm1' : 'b0' };
-      const mod = { elevator: ELEV, body: BODY }[data.scenario];
+      const mod = MODULES[data.scenario];
       if (mod) {
         state[data.scenario] = Object.assign(mod.load(c, num), data.scenario === 'elevator' ? { mystery: { on: !!my.on, target: 'person' } } : {});
       } else if (data.scenario === 'atwood') {
@@ -895,7 +920,7 @@
     const cs = getComputedStyle(document.documentElement);
     const names = ['ink', 'muted', 'line', 'panel', 'scene', 'grid', 'bench', 'bench-edge', 'accent',
       'f-w', 'f-n', 'f-f', 'f-a', 'l1', 'l2', 'l3', 'l4', 'b1', 'b2', 'b3', 'b4', 'b5',
-      'fig-skin', 'fig-shirt', 'fig-shorts', 'fig-shoe', 'fig-hair', 'track'];
+      'fig-skin', 'fig-shirt', 'fig-shorts', 'fig-shoe', 'fig-hair', 'track', 'horse'];
     C = {};
     names.forEach((nm) => (C[nm] = cs.getPropertyValue('--' + nm).trim() || '#888'));
     C.fontBody = cs.getPropertyValue('--font-body').trim() || 'sans-serif';
@@ -1811,6 +1836,10 @@
     const canvas = $('graph');
     const { ctx, W, H } = prepCanvas(canvas);
     if (!analysis || !analysis.ok) return;
+    if (state.scenario === 'lab') {
+      LAB.drawGraph(ctx, W, H);
+      return;
+    }
     const i = Math.min(ui.track, analysis.bodies.length - 1);
     const tEnd = sim.tStop;
     const launching = !!(sim.geom && sim.geom.flight);
@@ -2027,13 +2056,30 @@
     return q;
   }
 
+  function mcQuestions() {
+    const xs = xsFor(analysis);
+    return analysis && analysis.ok && xs && xs.mcq ? xs.mcq(analysis) || [] : [];
+  }
+  function renderMC() {
+    const mc = mcQuestions();
+    return mc
+      .map((m) =>
+        '<fieldset class="mcq" data-mc="' + m.key + '"><legend>' + esc(m.q) + '</legend>' +
+        m.options.map((o, i) => {
+          const id = 'mc-' + m.key + '-' + i;
+          return '<label class="mc-opt" for="' + id + '"><input type="radio" name="mc-' + m.key + '" id="' + id + '" value="' + i + '"' + (ui.pred['mc:' + m.key] === String(i) ? ' checked' : '') + '> <span>' + esc(o) + '</span></label>';
+        }).join('') +
+        '<p class="mc-out" aria-live="polite"></p></fieldset>')
+      .join('');
+  }
   function renderCheck() {
     const qs = quantities();
-    const sig = state.scenario + '|' + qs.map((q) => q.key + ':' + q.label + ':' + (q.na ? 1 : 0)).join('|');
+    const mcSig = mcQuestions().map((m) => m.key + ':' + m.correct).join(',');
+    const sig = state.scenario + '|' + mcSig + '|' + qs.map((q) => q.key + ':' + q.label + ':' + (q.sub || '') + ':' + (q.na ? 1 : 0)).join('|');
     $('score').textContent = '';
     if (sig !== ui.checkSig) {
       ui.checkSig = sig;
-      if (!qs.length) {
+      if (!qs.length && !mcQuestions().length) {
         $('check-rows').innerHTML = '<p class="hint">Fix the setup first.</p>';
         return;
       }
@@ -2065,11 +2111,17 @@
           : analysis.friction
             ? 'More: normal, friction and net force on each block'
             : 'More: normal and net force on each block';
+      const mcHtml = renderMC();
       $('check-rows').innerHTML =
+        (mcHtml ? '<div class="check-group"><h3>Questions</h3>' + mcHtml + '</div>' : '') +
         order.map((gname) => '<div class="check-group"><h3>' + esc(titleOf(gname)) + '</h3>' + qs.filter((q) => q.group === gname).map(row).join('') + '</div>').join('') +
         (lau.length ? '<div class="check-group"><h3>Flying off the table</h3>' + lau.map(row).join('') + '</div>' : '') +
         (more.length ? '<details class="check-group"><summary>' + moreTitle + '</summary>' + more.map(row).join('') + '</details>' : '');
     } else {
+      document.querySelectorAll('.mcq').forEach((f) => {
+        f.classList.remove('good', 'bad');
+        f.querySelector('.mc-out').textContent = '';
+      });
       document.querySelectorAll('.qrow').forEach((r) => {
         r.classList.remove('good', 'bad');
         const q = qs.find((x) => x.key === r.dataset.key);
@@ -2100,6 +2152,22 @@
       if (ok) right++;
       r.classList.add(ok ? 'good' : 'bad');
       out.textContent = ok ? '✓ correct' + (reveal ? ' (' + fmt(ans) + ')' : '') : reveal ? '✗ answer: ' + fmt(ans) : x > ans ? '✗ too high' : '✗ too low';
+    });
+    mcQuestions().forEach((m) => {
+      const f = document.querySelector('.mcq[data-mc="' + m.key + '"]');
+      if (!f) return;
+      const out = f.querySelector('.mc-out');
+      f.classList.remove('good', 'bad');
+      const sel = f.querySelector('input:checked');
+      if (!sel) {
+        out.textContent = reveal ? 'Answer: ' + m.options[m.correct] + '. ' + m.why : '';
+        return;
+      }
+      tried++;
+      const ok = +sel.value === m.correct;
+      if (ok) right++;
+      f.classList.add(ok ? 'good' : 'bad');
+      out.textContent = ok ? '✓ Correct. ' + m.why : reveal ? '✗ Answer: ' + m.options[m.correct] + '. ' + m.why : '✗ Not quite. ' + m.why;
     });
     $('score').textContent = tried ? right + ' of ' + tried + ' correct' : reveal ? '' : 'Enter at least one answer.';
     if (!reveal && mysteryOn()) {
@@ -3492,9 +3560,1165 @@
     },
   };
 
-  const XS = { elevator: ELEV, body: BODY, traction: BODY };
+  /* ---------------- shared helpers for the new tabs ---------------- */
+  const chipH = (color, text) => '<span><i style="background:' + color + '"></i>' + text + '</span>';
+  const pairsH = (items) => '<h3>Action–reaction pairs</h3><ul>' + items.map((x) => '<li>' + x + '</li>').join('') + '</ul>';
+  const swatch = (v) => '<span class="swatch" style="background:var(' + v + ')"></span>';
+  function boxW(ctx, view, x0, y0, x1, y1, fill, stroke, r = 0) {
+    const [a, b] = view.P(x0, y1);
+    const [c2, d2] = view.P(x1, y0);
+    ctx.save();
+    ctx.fillStyle = fill;
+    ctx.strokeStyle = stroke || C['bench-edge'];
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (ctx.roundRect && r) ctx.roundRect(a, b, c2 - a, d2 - b, r * view.k);
+    else ctx.rect(a, b, c2 - a, d2 - b);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+  function wheel(ctx, view, x, y, r) {
+    const [cx, cy] = view.P(x, y);
+    ctx.save();
+    ctx.fillStyle = C.ink;
+    ctx.strokeStyle = C.scene;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * view.k, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = C.muted;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * view.k * 0.35, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.restore();
+  }
+  // world-space force arrow from point p in direction (dx, dy), length in pixels
+  function forceArrow(ctx, view, p, dx, dy, len, color, label, side = 'auto') {
+    const [x1, y1] = view.P(p.x, p.y);
+    const L = Math.hypot(dx, dy) || 1;
+    const ux = dx / L;
+    const uy = -dy / L;
+    const x2 = x1 + ux * len;
+    const y2 = y1 + uy * len;
+    arrow(ctx, x1, y1, x2, y2, color, 4, 13);
+    if (label) {
+      const align = side === 'auto' ? (Math.abs(ux) > 0.4 ? (ux > 0 ? 'left' : 'right') : 'left') : side;
+      labelText(ctx, label, x2 + (Math.abs(ux) > 0.4 ? ux * 8 : 10), y2 + (Math.abs(ux) > 0.4 ? -12 : uy * 6), color, align, 15);
+    }
+  }
+  const staticPlay = 'Nothing moves in this problem. Use the diagrams and Predict & check.';
+
+  /* ---------------- Equilibrium: traffic light and block on a wall ---------------- */
+  const STATICS_MODES = [
+    ['traffic', 'Hanging traffic light (two cables)'],
+    ['wall', 'Block pressed against a wall'],
+  ];
+  const STATICS = {
+    defaults: () => ({ mode: 'traffic', traffic: { m: 15, th1: 30, th2: 45 }, wall: { m: 2, F: 60, phi: 0, mus: 0.5, muk: 0.4 }, mystery: { on: false, target: '' } }),
+    solve(c) {
+      if (c.mode === 'traffic') {
+        const an = P.solveTrafficLight({ m: c.traffic.m, th1: c.traffic.th1, th2: c.traffic.th2, g: state.g });
+        an.bodies = [{ name: 'Traffic light', m: c.traffic.m, kind: 'hanging', a: 0 }];
+        an.atRest = true;
+        return an;
+      }
+      const w = c.wall;
+      const an = P.solveWall({ m: w.m, F: w.F, phi: w.phi, mus: w.mus, muk: w.muk, g: state.g });
+      an.bodies = [{ name: 'Block', m: w.m, kind: 'block', a: an.a }];
+      an.atRest = an.state === 'rest';
+      return an;
+    },
+    controls(c) {
+      let h = '<div class="group"><h2>Problem</h2>' + selectField('Type of problem', 'sel-statics-mode', 'mode', STATICS_MODES, c.mode, true) + '</div>';
+      if (c.mode === 'traffic') {
+        h += '<div class="group"><h2>Traffic light</h2>' +
+          numField('Mass of the light', 'traffic.m', c.traffic.m, 'kg', { min: 1, max: 200, step: 0.5 }) +
+          numField('Left cable angle θ₁ (above horizontal)', 'traffic.th1', c.traffic.th1, '°', { min: 3, max: 80, step: 1 }) +
+          numField('Right cable angle θ₂ (above horizontal)', 'traffic.th2', c.traffic.th2, '°', { min: 3, max: 80, step: 1 }) +
+          '<p class="note">The light hangs at rest from a knot where the two cables meet.</p></div>';
+      } else {
+        const w = c.wall;
+        h += '<div class="group"><h2>Block and push</h2>' +
+          numField('Mass of the block', 'wall.m', w.m, 'kg', { min: 0.1, max: 50, step: 0.1 }) +
+          numField('Size of the push F', 'wall.F', w.F, 'N', { min: 0, max: 2000, step: 1 }) +
+          numField('Push angle φ (above horizontal)', 'wall.phi', w.phi, '°', { min: 0, max: 80, step: 1 }) +
+          '<p class="note">The push points into the wall. A positive angle also pushes the block upward.</p></div>' +
+          '<div class="group"><h2>Friction with the wall</h2>' +
+          numField('Static coefficient μs', 'wall.mus', w.mus, '', { min: 0, max: 2, step: 0.05 }) +
+          numField('Kinetic coefficient μk', 'wall.muk', w.muk, '', { min: 0, max: 2, step: 0.05 }) +
+          (w.muk > w.mus ? '<p class="warn">μk should not be larger than μs. The simulator uses μk = μs.</p>' : '') + '</div>';
+      }
+      return h;
+    },
+    randomize(c, r) {
+      c.traffic = { m: r(5, 40, 0.5), th1: r(15, 60, 1), th2: r(15, 60, 1) };
+      const mus = r(0.3, 0.8, 0.05);
+      c.wall = { m: r(0.5, 5, 0.1), F: r(10, 150, 1), phi: c.wall.phi > 0 ? r(10, 60, 5) : 0, mus, muk: Math.max(0.05, Math.round((mus - r(0.05, 0.2, 0.05)) * 100) / 100) };
+    },
+    load(c, num) {
+      const d = STATICS.defaults();
+      const t = c.traffic || {};
+      const w = c.wall || {};
+      return {
+        mode: STATICS_MODES.some((x) => x[0] === c.mode) ? c.mode : d.mode,
+        traffic: { m: num(t.m, d.traffic.m, 1, 200), th1: num(t.th1, d.traffic.th1, 3, 80), th2: num(t.th2, d.traffic.th2, 3, 80) },
+        wall: { m: num(w.m, d.wall.m, 0.1, 50), F: num(w.F, d.wall.F, 0, 2000), phi: num(w.phi, 0, 0, 80), mus: num(w.mus, 0.5, 0, 2), muk: num(w.muk, 0.4, 0, 2) },
+        mystery: d.mystery,
+      };
+    },
+    // wall: block height above its start; it starts 1.6 m up the wall
+    wallY: (an, t) => 1.6 + 0.5 * an.a * t * t,
+    buildSim(an) {
+      if (an.kind === 'traffic' || an.state === 'rest') return { kind: an.kind, tStop: 0, reason: null, static: true, staticMessage: an.kind === 'traffic' ? 'This is an equilibrium problem: the light hangs at rest. Use the diagrams and Predict & check.' : 'Static friction holds the block in place: nothing moves.' };
+      // slides down to the floor, or up 1.2 m
+      const dist = an.a < 0 ? 1.6 : 1.2;
+      const tStop = Math.sqrt((2 * dist) / Math.abs(an.a));
+      return { kind: 'wall', tStop, reason: an.a < 0 ? 'The block slid down to the floor' : 'The block slid up the wall' };
+    },
+    motion(an, t) {
+      if (an.kind === 'traffic' || an.state === 'rest') return { s: 0, v: 0, a: 0 };
+      return { s: 0.5 * an.a * t * t, v: an.a * t, a: an.a };
+    },
+    noGraph: (an) => an.kind === 'traffic' || an.state === 'rest',
+    graphNames: { x: 'Position–time', v: 'Velocity–time', a: 'Acceleration–time' },
+    graphValue(an, which, t) {
+      const m = STATICS.motion(an, t);
+      return which === 'x' ? m.s : which === 'v' ? m.v : m.a;
+    },
+    graphLabel: { x: 'displacement (m, + up)', v: 'velocity (m/s)', a: 'acceleration (m/s²)' },
+    draw(ctx, W, H, t) {
+      const an = analysis;
+      return an.kind === 'traffic' ? STATICS.drawTraffic(ctx, W, H) : STATICS.drawWall(ctx, W, H, t);
+    },
+    drawTraffic(ctx, W, H) {
+      const an = analysis;
+      const a1 = an.th1 * DEG;
+      const a2 = an.th2 * DEG;
+      const knot = { x: 0, y: 3.2 };
+      const span = 2.4;
+      const A = { x: -span, y: knot.y + span * Math.tan(a1) };
+      const B = { x: span, y: knot.y + span * Math.tan(a2) };
+      const top = Math.max(A.y, B.y) + 0.5;
+      const view = fitView({ x0: -3.2, x1: 3.2, y0: -0.15, y1: Math.max(top, 4.6) }, W, H);
+      const P = view.P;
+      drawGrid(ctx, W, H, view);
+      drawFloor(ctx, view, -3.2, 3.2);
+      // poles
+      boxW(ctx, view, -span - 0.18, 0, -span - 0.02, A.y + 0.2, C.bench);
+      boxW(ctx, view, span + 0.02, 0, span + 0.18, B.y + 0.2, C.bench);
+      // cables
+      ctx.save();
+      ctx.strokeStyle = C.ink;
+      ctx.lineWidth = 2.2;
+      const [ax, ay] = P(A.x, A.y);
+      const [bx, by] = P(B.x, B.y);
+      const [kx, ky] = P(knot.x, knot.y);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(kx, ky);
+      ctx.lineTo(bx, by);
+      ctx.moveTo(kx, ky);
+      const [, hy] = P(0, knot.y - 0.25);
+      ctx.lineTo(kx, hy);
+      ctx.stroke();
+      ctx.restore();
+      // the light
+      boxW(ctx, view, -0.2, knot.y - 1.3, 0.2, knot.y - 0.25, C.panel, C.ink, 0.05);
+      [['#e5484d', 0], ['#f5b400', 1], ['#2fbf71', 2]].forEach(([col, i]) => {
+        const [cx, cy] = P(0, knot.y - 0.42 - i * 0.3);
+        ctx.save();
+        ctx.fillStyle = col;
+        ctx.globalAlpha = 0.9;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 0.11 * view.k, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.restore();
+      });
+      labelText(ctx, trimNum(an.m) + ' kg', P(0.3, 0)[0], P(0, knot.y - 0.8)[1], C.ink, 'left', 15);
+      // angle arcs at the knot
+      ctx.save();
+      ctx.strokeStyle = C.muted;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(kx - 0.9 * view.k, ky);
+      ctx.lineTo(kx + 0.9 * view.k, ky);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const rr = 0.6 * view.k;
+      ctx.beginPath();
+      ctx.arc(kx, ky, rr, Math.PI, Math.PI + a1);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(kx, ky, rr * 0.85, -a2, 0);
+      ctx.stroke();
+      ctx.restore();
+      labelText(ctx, 'θ₁', kx - (rr + 14) * Math.cos(a1 * 0.5), ky - (rr + 12) * Math.sin(a1 * 0.5), C.ink, 'center', 15);
+      labelText(ctx, 'θ₂', kx + (rr * 0.85 + 14) * Math.cos(a2 * 0.5), ky - (rr * 0.85 + 12) * Math.sin(a2 * 0.5), C.ink, 'center', 15);
+      labelText(ctx, 'θ₁ = ' + trimNum(an.th1) + '°    θ₂ = ' + trimNum(an.th2) + '°', 12, 40, C.muted, 'left', 13, 600, C.fontBody);
+      // force vectors at the knot
+      const sc = (1.3 * view.k) / Math.max(an.T1, an.T2, an.W);
+      forceArrow(ctx, view, knot, -Math.cos(a1), Math.sin(a1), an.T1 * sc, C.l1, 'T₁');
+      forceArrow(ctx, view, knot, Math.cos(a2), Math.sin(a2), an.T2 * sc, C.l2, 'T₂');
+      labelText(ctx, 'At rest: an equilibrium problem', 12, 18, C.ink, 'left', 15, 700, C.fontBody);
+    },
+    drawWall(ctx, W, H, t) {
+      const an = analysis;
+      const y = STATICS.wallY(an, t);
+      const view = fitView({ x0: -1.4, x1: 2.6, y0: -0.15, y1: 3.4 }, W, H);
+      const P = view.P;
+      drawGrid(ctx, W, H, view);
+      drawFloor(ctx, view, -1.4, 2.6);
+      // the wall
+      boxW(ctx, view, -0.5, 0, 0, 3.3, C.bench);
+      // ruler on the wall
+      ctx.save();
+      ctx.strokeStyle = C.muted;
+      for (let i = 0; i <= 32; i++) {
+        const [mx, my] = P(0, i * 0.1);
+        ctx.beginPath();
+        ctx.moveTo(mx, my);
+        ctx.lineTo(mx - (i % 10 === 0 ? 12 : i % 5 === 0 ? 8 : 4), my);
+        ctx.stroke();
+        if (i % 5 === 0 && view.k > 40) labelText(ctx, (i / 10).toFixed(1), mx - 16, my, C.muted, 'right', 12, 400);
+      }
+      ctx.restore();
+      for (const ts of strobeTimes(t)) {
+        const [gx, gy] = P(0.25, STATICS.wallY(an, ts));
+        ctx.save();
+        ctx.globalAlpha = 0.4;
+        ctx.fillStyle = C.ink;
+        ctx.beginPath();
+        ctx.arc(gx, gy, 3, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.restore();
+      }
+      // block
+      const bs = 0.5;
+      boxW(ctx, view, 0, y - bs / 2, bs, y + bs / 2, bodyColor(0), C.ink);
+      const [bx, by] = P(bs / 2, y);
+      labelText(ctx, trimNum(an.m) + ' kg', bx, by, C.ink, 'center', 15);
+      // the push: a rod pressing on the block's right face
+      const p = an.phi * DEG;
+      const dir = { x: -Math.cos(p), y: Math.sin(p) }; // direction of F
+      const contact = { x: bs, y: y - 0.06 };
+      const [cx, cy] = P(contact.x, contact.y);
+      const len = 0.95 * view.k;
+      const tail = [cx - dir.x * len, cy + dir.y * len];
+      ctx.save();
+      ctx.strokeStyle = C['bench-edge'];
+      ctx.lineWidth = 0.08 * view.k;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(tail[0], tail[1]);
+      ctx.lineTo(cx - dir.x * 10, cy + dir.y * 10);
+      ctx.stroke();
+      ctx.restore();
+      arrow(ctx, tail[0] + dir.x * 0.2 * view.k, tail[1] - dir.y * 0.2 * view.k, cx - dir.x * 6, cy + dir.y * 6, C['f-a'], 4, 13);
+      labelText(ctx, 'F = ' + trimNum(an.F) + ' N', tail[0] + 4, tail[1] - 16, C['f-a'], 'left', 15);
+      if (an.phi > 0) labelText(ctx, 'φ = ' + trimNum(an.phi) + '°', tail[0] + 4, tail[1] + 18, C.ink, 'left', 14);
+      const phase = an.state === 'rest' ? 'Held at rest' : an.state === 'down' ? 'Sliding down' : 'Sliding up';
+      labelText(ctx, phase, 12, 18, C.ink, 'left', 15, 700, C.fontBody);
+    },
+    forceSets(an) {
+      if (an.kind === 'traffic') {
+        const a1 = an.th1 * DEG;
+        const a2 = an.th2 * DEG;
+        return [{
+          body: { name: 'The knot (holding the light)', m: null, kind: 'hanging' },
+          idx: 2,
+          tilt: 0,
+          arrows: [
+            { dir: { x: -Math.cos(a1), y: Math.sin(a1) }, mag: an.T1, color: C.l1, label: 'T₁' },
+            { dir: { x: Math.cos(a2), y: Math.sin(a2) }, mag: an.T2, color: C.l2, label: 'T₂' },
+            { dir: { x: 0, y: -1 }, mag: an.W, color: C['f-w'], label: 'W' },
+          ],
+        }];
+      }
+      const p = an.phi * DEG;
+      const arrows = [
+        { dir: { x: 0, y: -1 }, mag: an.W, color: C['f-w'], label: 'W' },
+        { dir: { x: 1, y: 0 }, mag: an.N, color: C['f-n'], label: 'N' },
+        { dir: { x: -Math.cos(p), y: Math.sin(p) }, mag: an.F, color: C['f-a'], label: 'F' },
+      ];
+      if (Math.abs(an.f) > 1e-9) arrows.push({ dir: { x: 0, y: Math.sign(an.f) }, mag: Math.abs(an.f), color: C['f-f'], label: an.fType === 'static' ? 'fₛ' : 'fₖ' });
+      return [{ body: an.bodies[0], idx: 0, tilt: 0, arrows }];
+    },
+    fbdCaption: (an) => (an.kind === 'traffic' ? 'The forces on the knot must add to zero. Think of the light and knot together as one object.' : 'The wall pushes out on the block (N) and friction from the wall acts along it, up or down.'),
+    legend(an, showV) {
+      const v = (x) => (showV ? ' (' + fmt(x) + ' N)' : '');
+      if (an.kind === 'traffic') {
+        return {
+          legend: chipH('var(--l1)', 'T₁: left cable') + chipH('var(--l2)', 'T₂: right cable') + chipH('var(--f-w)', 'W: weight of the light'),
+          pairs: pairsH([
+            swatch('--l1') + 'Each cable pulls on the knot, and the knot pulls back on that cable just as hard' + v(an.T1) + '. The cable passes that pull on to its pole.',
+            'The horizontal parts of T₁ and T₂ must be equal, because nothing else pulls sideways. The steeper cable carries more of the weight.',
+            '<b>Weight:</b> Earth pulls the light down, and the light pulls Earth up just as hard.',
+          ]),
+        };
+      }
+      return {
+        legend: chipH('var(--f-w)', 'W: weight') + chipH('var(--f-n)', 'N: the wall pushes out') + chipH('var(--f-a)', 'F: your push') + chipH('var(--f-f)', 'f: friction from the wall'),
+        pairs: pairsH([
+          '<b>N</b>' + v(an.N) + ': the wall pushes out on the block, and the block pushes into the wall just as hard.',
+          '<b>Friction</b>' + v(Math.abs(an.f)) + ': the wall rubs on the block, and the block rubs on the wall in the opposite direction.',
+          '<b>F</b>: you push on the block, and the block pushes back on your hand just as hard.',
+          'Pressing harder increases N, and a bigger N means more friction is available. That is why a hard enough push can hold the block up.',
+        ]),
+      };
+    },
+    mcq(an) {
+      if (an.kind !== 'wall') return [];
+      return [{
+        key: 'wallState',
+        q: 'With this push, what does the block do?',
+        options: ['It stays where it is', 'It slides down the wall', 'It slides up the wall'],
+        correct: an.state === 'rest' ? 0 : an.state === 'down' ? 1 : 2,
+        why: 'Compare the friction needed to hold the block (W − F sin φ = ' + fmt(an.W - an.Fpar) + ' N) with the most static friction available (μs N = ' + fmt(an.mus * an.N) + ' N).',
+      }];
+    },
+    quantities(an) {
+      const q = [];
+      const row = (key, label, unit, value, sub, group = 'main') => q.push({ key, group, label, unit, value, sub });
+      if (an.kind === 'traffic') {
+        row('T1', 'Tension in the left cable, T₁', 'N', an.T1);
+        row('T2', 'Tension in the right cable, T₂', 'N', an.T2);
+        row('Tx', 'Horizontal part of each tension', 'N', an.T1x, 'the same for both cables');
+        row('T1y', 'Vertical part of T₁', 'N', an.T1y, '', 'more');
+        row('T2y', 'Vertical part of T₂', 'N', an.T2y, '', 'more');
+        row('W', 'Weight of the light', 'N', an.W, '', 'more');
+        return q;
+      }
+      row('N', 'Normal force from the wall', 'N', an.N);
+      row('f', 'Friction force on the block', 'N', Math.abs(an.f), an.state === 'rest' ? 'static friction' : 'kinetic friction');
+      if (an.state !== 'rest') row('a', 'Acceleration of the block', 'm/s²', Math.abs(an.a));
+      if (isFinite(an.Fmin)) row('Fmin', 'Smallest push that holds the block up', 'N', an.Fmin, 'at this angle');
+      if (an.phi > 0 && isFinite(an.Fmax)) row('Fmax', 'Largest push before it slides up', 'N', an.Fmax, 'at this angle');
+      row('W', 'Weight of the block', 'N', an.W, '', 'more');
+      return q;
+    },
+    moreTitle: 'More',
+    solution(an) {
+      const g = fmt(an.g);
+      if (an.kind === 'traffic') {
+        return '<section><h3>1. Forces on the knot</h3><p>The knot is at rest, so the forces on it add to zero (Newton’s first law). Three forces act: T₁ up and to the left at θ₁ = ' + trimNum(an.th1) + '°, T₂ up and to the right at θ₂ = ' + trimNum(an.th2) + '°, and the light’s weight W = mg = ' + fmt(an.m) + ' × ' + g + ' = ' + fmt(an.W) + ' N.</p></section>' +
+          '<section><h3>2. Write ΣF = 0 for each direction</h3><div class="eq">x:  T₂ cos θ₂ − T₁ cos θ₁ = 0\ny:  T₁ sin θ₁ + T₂ sin θ₂ − W = 0</div></section>' +
+          '<section><h3>3. Solve</h3><p>From the x equation, T₂ = T₁ cos θ₁ / cos θ₂. Put that into the y equation and simplify:</p>' +
+          '<div class="eq">T₁ = W cos θ₂ / sin(θ₁ + θ₂) = ' + fmt(an.W) + ' × ' + fmt(Math.cos(an.th2 * DEG), 3) + ' / ' + fmt(Math.sin((an.th1 + an.th2) * DEG), 3) + ' = ' + fmt(an.T1) + ' N\n' +
+          'T₂ = W cos θ₁ / sin(θ₁ + θ₂) = ' + fmt(an.W) + ' × ' + fmt(Math.cos(an.th1 * DEG), 3) + ' / ' + fmt(Math.sin((an.th1 + an.th2) * DEG), 3) + ' = ' + fmt(an.T2) + ' N</div></section>' +
+          '<section><h3>4. Check</h3><div class="eq">Horizontal parts:  T₁ cos θ₁ = ' + fmt(an.T1x) + ' N,  T₂ cos θ₂ = ' + fmt(an.T2x) + ' N  (equal)\nVertical parts:  ' + fmt(an.T1y) + ' + ' + fmt(an.T2y) + ' = ' + fmt(an.T1y + an.T2y) + ' N = W</div>' +
+          '<p>Shallow cables need large tensions: as both angles shrink toward zero, the tension grows without limit.</p></section>';
+      }
+      const p = an.phi;
+      let h = '<section><h3>1. Forces on the block</h3><p>Take + as up and away from the wall. Four forces act: the weight W = mg = ' + fmt(an.W) + ' N, your push F = ' + trimNum(an.F) + ' N at φ = ' + trimNum(p) + '° above horizontal, the wall’s normal force N, and friction f along the wall.</p></section>';
+      h += '<section><h3>2. Horizontal: find N</h3><p>The block does not move into or away from the wall.</p><div class="eq">N − F cos φ = 0   →   N = ' + trimNum(an.F) + ' × cos ' + trimNum(p) + '° = ' + fmt(an.N) + ' N</div></section>';
+      h += '<section><h3>3. Vertical: is static friction enough?</h3><div class="eq">To hold it still:  f + F sin φ − W = 0   →   f needed = W − F sin φ = ' + fmt(an.W) + ' − ' + fmt(an.Fpar) + ' = ' + fmt(an.W - an.Fpar) + ' N\nMost static friction available:  μs N = ' + trimNum(an.mus) + ' × ' + fmt(an.N) + ' = ' + fmt(an.mus * an.N) + ' N</div>';
+      if (an.state === 'rest') h += '<p>|f needed| ≤ μs N, so static friction holds: the block <b>stays put</b>, and friction is ' + fmt(Math.abs(an.f)) + ' N ' + (an.f >= 0 ? 'up' : 'down') + '.</p></section>';
+      else
+        h += '<p>|f needed| > μs N, so the block slides ' + (an.state === 'down' ? 'down' : 'up') + '. Kinetic friction μk N = ' + trimNum(an.muk) + ' × ' + fmt(an.N) + ' = ' + fmt(Math.abs(an.f)) + ' N acts ' + (an.state === 'down' ? 'up' : 'down') + '.</p>' +
+          '<div class="eq">a = (F sin φ − W ' + (an.f >= 0 ? '+ ' : '− ') + 'fₖ) / m = (' + fmt(an.Fpar) + ' − ' + fmt(an.W) + signed(an.f) + ') / ' + fmt(an.m) + ' = ' + fmt(an.a) + ' m/s²</div></section>';
+      h += '<section><h3>4. The smallest push that holds the block</h3><p>The block is about to slide down when static friction is at its maximum, pointing up:</p>' +
+        '<div class="eq">F sin φ + μs F cos φ = W   →   F = W / (sin φ + μs cos φ) = ' + fmt(an.W) + ' / (' + fmt(Math.sin(p * DEG), 3) + ' + ' + trimNum(an.mus) + ' × ' + fmt(Math.cos(p * DEG), 3) + ') = ' + (isFinite(an.Fmin) ? fmt(an.Fmin) + ' N' : 'no push can hold it') + '</div>';
+      if (p > 0)
+        h += '<p>Push too hard at an upward angle and the block slides up instead. That starts when friction is at its maximum, pointing down:</p><div class="eq">F = W / (sin φ − μs cos φ) = ' + (isFinite(an.Fmax) ? fmt(an.Fmax) + ' N' : 'never (sin φ ≤ μs cos φ, so friction can always stop it)') + '</div>';
+      return h + '</section>';
+    },
+  };
+
+  /* ---------------- F = ma lab ---------------- */
+  const LAB_D = 1; // distance between the photogates (m)
+  function gauss() {
+    let u = 0;
+    let v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+  const LAB = {
+    defaults: () => ({ M: 1.2, f: 0.15, mg: 100, hidden: false, mystery: { on: false, target: '' } }),
+    // the true total mass and friction (hidden ones live only in this browser)
+    params(c) {
+      if (!c.hidden) return { M: c.M, f: c.f };
+      if (!ui.labSecret) ui.labSecret = { M: Math.round((0.6 + Math.random() * 1.4) * 20) / 20, f: Math.round((0.05 + Math.random() * 0.35) * 100) / 100 };
+      return ui.labSecret;
+    },
+    solve(c) {
+      const p = LAB.params(c);
+      const m = Math.min(c.mg / 1000, p.M - 0.05);
+      const tr = P.labTrial({ M: p.M, m, f: p.f, g: state.g, d: LAB_D });
+      const an = { kind: 'lab', ok: true, g: state.g, M: p.M, fr: p.f, m, ...tr, hidden: c.hidden };
+      an.bodies = [{ name: 'Cart', m: p.M - m, kind: 'block', a: tr.a }, { name: 'Hanging mass', m, kind: 'hanging', a: tr.a }];
+      an.atRest = tr.a <= 0;
+      return an;
+    },
+    controls(c) {
+      let h = '<div class="group"><h2>The cart and track</h2>' + checkField('Hide the total mass and friction (find them from the graph)', 'hidden', c.hidden);
+      if (c.hidden) {
+        h += hiddenMass('Total mass M') + '<label class="field"><span>Friction f <span class="unit">(N)</span></span><input type="text" value="?" disabled aria-label="Friction is hidden"></label>' +
+          '<div class="btn-row"><button type="button" class="btn btn-small" data-action="newlab">New hidden cart</button></div>';
+      } else {
+        h += numField('Total mass M (cart + hanger)', 'M', c.M, 'kg', { min: 0.3, max: 5, step: 0.05 }) +
+          numField('Friction on the cart f', 'f', c.f, 'N', { min: 0, max: 3, step: 0.01 });
+      }
+      h += '<p class="note">To keep the total mass the same, mass is moved from the cart to the hanger. Friction is a constant drag on the cart.</p></div>';
+      h += '<div class="group"><h2>This trial</h2>' + numField('Hanging mass m', 'mg', c.mg, 'g', { min: 5, max: 600, step: 5 }) +
+        '<p class="note">Press Play. The timer runs from the first photogate to the second, ' + fmt(LAB_D) + ' m apart, and each run is added to the data table on the Data & graph tab.</p></div>';
+      const n = (ui.labTrials || []).length;
+      h += '<div class="group"><h2>Data</h2><p class="note">' + n + ' trial' + (n === 1 ? '' : 's') + ' recorded.</p><div class="btn-row"><button type="button" class="btn btn-small" data-action="labclear"' + (n ? '' : ' disabled') + '>Clear the data table</button></div></div>';
+      return h;
+    },
+    randomize(c, r) {
+      c.M = r(0.6, 2, 0.05);
+      c.f = r(0.05, 0.4, 0.01);
+      c.mg = r(40, 200, 10);
+      ui.labSecret = null;
+      ui.labTrials = [];
+    },
+    load(c, num) {
+      const d = LAB.defaults();
+      return { M: num(c.M, d.M, 0.3, 5), f: num(c.f, d.f, 0, 3), mg: num(c.mg, d.mg, 5, 600), hidden: !!c.hidden, mystery: d.mystery };
+    },
+    // the cart starts with its front at gate 1 and runs until it reaches gate 2
+    buildSim(an) {
+      if (an.a <= 0) return { kind: 'lab', tStop: 0, static: true, staticMessage: 'The hanging weight (' + fmt(an.F) + ' N) is not enough to overcome friction, so the cart does not move. Add more hanging mass.' };
+      return { kind: 'lab', tStop: an.t, reason: 'The cart reached the second photogate' };
+    },
+    motion(an, t) {
+      return { s: 0.5 * an.a * t * t, v: an.a * t, a: an.a };
+    },
+    // record a finished run (with a little timing noise when the values are hidden)
+    onRunEnd(an) {
+      const noise = an.hidden ? 1 + 0.012 * gauss() : 1;
+      const t = an.t * noise;
+      ui.labTrials = ui.labTrials || [];
+      ui.labTrials.push({ m: an.m, F: an.F, t, a: (2 * LAB_D) / (t * t) });
+      renderControls();
+      LAB.renderData();
+      renderCheck();
+    },
+    renderData() {
+      const el = $('lab-data');
+      const rows = ui.labTrials || [];
+      if (!rows.length) {
+        el.innerHTML = '<p class="hint">No trials yet. Set a hanging mass and press Play. Try at least four different masses.</p>';
+        return;
+      }
+      el.innerHTML = '<div class="table-wrap"><table class="data"><thead><tr><th>Trial</th><th>m (g)</th><th>F = mg (N)</th><th>t (s)</th><th>a = 2d/t² (m/s²)</th><th></th></tr></thead><tbody>' +
+        rows.map((r, i) => '<tr><td>' + (i + 1) + '</td><td>' + fmt(r.m * 1000, 0) + '</td><td>' + fmt(r.F, 3) + '</td><td>' + fmt(r.t, 3) + '</td><td>' + fmt(r.a, 3) +
+          '</td><td><button type="button" class="icon-btn" data-labdel="' + i + '" aria-label="Delete trial ' + (i + 1) + '">×</button></td></tr>').join('') +
+        '</tbody></table></div>';
+    },
+    fit() {
+      const rows = ui.labTrials || [];
+      return P.fitLine(rows.map((r) => [r.a, r.F]));
+    },
+    graphNames: { x: 'Position–time', v: 'Velocity–time', a: 'Acceleration–time' },
+    graphValue(an, which, t) {
+      const m = LAB.motion(an, t);
+      return which === 'x' ? m.s : which === 'v' ? m.v : m.a;
+    },
+    graphLabel: { x: 'distance (m)', v: 'velocity (m/s)', a: 'acceleration (m/s²)' },
+    // the Data & graph tab: F vs a with a best-fit line
+    drawGraph(ctx, W, H) {
+      const rows = ui.labTrials || [];
+      const L = 72;
+      const R = 20;
+      const T = 20;
+      const B = 46;
+      const amax = Math.max(1, ...rows.map((r) => r.a)) * 1.15;
+      const Fmax = Math.max(0.5, ...rows.map((r) => r.F)) * 1.15;
+      const X = (a) => L + ((W - L - R) * a) / amax;
+      const Y = (F) => T + ((H - T - B) * (Fmax - F)) / Fmax;
+      ctx.font = '13px ' + C.fontMono;
+      ctx.strokeStyle = C.grid;
+      ctx.fillStyle = C.muted;
+      const xs = niceStep(amax, 8);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      for (let a = 0; a <= amax + 1e-9; a += xs) {
+        ctx.beginPath();
+        ctx.moveTo(Math.round(X(a)) + 0.5, T);
+        ctx.lineTo(Math.round(X(a)) + 0.5, H - B);
+        ctx.stroke();
+        ctx.fillText(+a.toFixed(3) + '', X(a), H - B + 6);
+      }
+      const ys = niceStep(Fmax, 6);
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      for (let F = 0; F <= Fmax + 1e-9; F += ys) {
+        ctx.beginPath();
+        ctx.moveTo(L, Math.round(Y(F)) + 0.5);
+        ctx.lineTo(W - R, Math.round(Y(F)) + 0.5);
+        ctx.stroke();
+        ctx.fillText(fmt(F, ys < 0.1 ? 2 : 1), L - 8, Y(F));
+      }
+      ctx.strokeStyle = C.muted;
+      ctx.beginPath();
+      ctx.moveTo(L, T);
+      ctx.lineTo(L, H - B);
+      ctx.lineTo(W - R, H - B);
+      ctx.stroke();
+      ctx.fillStyle = C.ink;
+      ctx.font = '600 14px ' + C.fontBody;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText('measured acceleration a (m/s²)', L + (W - L - R) / 2, H - 4);
+      ctx.save();
+      ctx.translate(16, T + (H - T - B) / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.textBaseline = 'middle';
+      ctx.fillText('hanging weight F = mg (N)', 0, 0);
+      ctx.restore();
+      const fit = LAB.fit();
+      if (fit) {
+        ctx.save();
+        ctx.strokeStyle = C['f-a'];
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(X(0), Y(fit.intercept));
+        ctx.lineTo(X(amax), Y(fit.intercept + fit.slope * amax));
+        ctx.stroke();
+        ctx.restore();
+        labelText(ctx, 'best fit:  F = ' + fmt(fit.slope, 3) + ' a ' + (fit.intercept < 0 ? '− ' : '+ ') + fmt(Math.abs(fit.intercept), 3), L + 12, T + 12, C['f-a'], 'left', 15);
+      }
+      rows.forEach((r) => {
+        ctx.fillStyle = C.accent;
+        ctx.beginPath();
+        ctx.arc(X(r.a), Y(r.F), 5.5, 0, 2 * Math.PI);
+        ctx.fill();
+      });
+      if (!rows.length) labelText(ctx, 'Run trials to add points', L + (W - L - R) / 2, T + (H - T - B) / 2, C.muted, 'center', 15, 400, C.fontBody);
+    },
+    draw(ctx, W, H, t) {
+      const an = analysis;
+      const s = an.a > 0 ? 0.5 * an.a * Math.min(t, an.t) ** 2 : 0;
+      const tableY = 1.55;
+      const view = fitView({ x0: -0.5, x1: 2.75, y0: -0.12, y1: 2.2 }, W, H);
+      const P = view.P;
+      drawGrid(ctx, W, H, view);
+      drawFloor(ctx, view, -0.5, 2.75);
+      // table and track
+      boxW(ctx, view, -0.35, tableY - 0.06, 2.3, tableY, C.bench);
+      boxW(ctx, view, -0.25, 0, -0.17, tableY - 0.06, C.bench);
+      boxW(ctx, view, 2.12, 0, 2.2, tableY - 0.06, C.bench);
+      // photogates at 0.35 m and 1.35 m (the cart's front starts at gate 1)
+      const g1 = 0.35;
+      const g2 = g1 + LAB_D;
+      for (const [gx, txt] of [[g1, 'Gate 1'], [g2, 'Gate 2']]) {
+        const [x0, y0] = P(gx - 0.03, tableY + 0.32);
+        const [x1, y1] = P(gx + 0.03, tableY);
+        ctx.save();
+        ctx.fillStyle = C['bench-edge'];
+        ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+        ctx.fillStyle = C['f-w'];
+        ctx.beginPath();
+        ctx.arc((x0 + x1) / 2, y0 + 6, 3.5, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.restore();
+        labelText(ctx, txt, (x0 + x1) / 2, y0 - 10, C.muted, 'center', 12, 600, C.fontBody);
+      }
+      dimH(ctx, view, g1, g2, tableY + 0.42, fmt(LAB_D) + ' m', C.accent);
+      // pulley at the table edge
+      const pc = { x: 2.3, y: tableY + 0.1 };
+      const rp = 0.06;
+      // cart
+      const cw = 0.32;
+      const front = g1 + s;
+      const cx0 = front - cw;
+      boxW(ctx, view, cx0, tableY + 0.04, front, tableY + 0.14, bodyColor(0), C.ink, 0.02);
+      wheel(ctx, view, cx0 + 0.06, tableY + 0.035, 0.035);
+      wheel(ctx, view, front - 0.06, tableY + 0.035, 0.035);
+      // mass left on the cart, drawn as small blocks
+      const onCart = Math.max(0, an.M - an.m - 0.3);
+      const nCart = Math.min(6, Math.round(onCart / 0.15));
+      for (let i = 0; i < nCart; i++) boxW(ctx, view, cx0 + 0.04 + i * 0.045, tableY + 0.14, cx0 + 0.075 + i * 0.045, tableY + 0.19, C.b5, C.ink);
+      // string and hanger
+      const drop = 0.25 + s;
+      ctx.save();
+      ctx.strokeStyle = C.ink;
+      ctx.lineWidth = 1.6;
+      const [sx, sy] = P(front, tableY + 0.09);
+      const [px, py] = P(pc.x, pc.y);
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(px, py - rp * view.k);
+      ctx.arc(px, py, rp * view.k, -Math.PI / 2, 0);
+      const [hx, hy] = P(pc.x + rp, pc.y - drop);
+      ctx.lineTo(hx, hy);
+      ctx.stroke();
+      ctx.fillStyle = C.panel;
+      ctx.beginPath();
+      ctx.arc(px, py, rp * view.k, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+      const nDisc = Math.max(1, Math.min(12, Math.round(an.m / 0.02)));
+      for (let i = 0; i < nDisc; i++) {
+        const yy = pc.y - drop - 0.02 - i * 0.025;
+        boxW(ctx, view, pc.x + rp - 0.06, yy - 0.02, pc.x + rp + 0.06, yy, C.b2, C.ink);
+      }
+      labelText(ctx, fmt(an.m * 1000, 0) + ' g', P(pc.x + rp + 0.1, 0)[0], P(0, pc.y - drop - 0.1)[1], C.ink, 'left', 14);
+      labelText(ctx, 'Cart + hanger = ' + (an.hidden ? '? kg' : fmt(an.M) + ' kg'), 12, 40, C.muted, 'left', 13, 600, C.fontBody);
+      // timer between the gates
+      const timer = an.a > 0 ? Math.min(t, an.t) : 0;
+      labelText(ctx, 'Timer: ' + timer.toFixed(3) + ' s', 12, 18, C.ink, 'left', 16, 700);
+    },
+    forceSets(an) {
+      const cart = an.M - an.m;
+      return [
+        {
+          body: an.bodies[0],
+          idx: 0,
+          tilt: 0,
+          arrows: [
+            { dir: { x: 0, y: -1 }, mag: cart * an.g, color: C['f-w'], label: 'W' },
+            { dir: { x: 0, y: 1 }, mag: cart * an.g, color: C['f-n'], label: 'N' },
+            { dir: { x: 1, y: 0 }, mag: an.T, color: C.l1, label: 'T' },
+            { dir: { x: -1, y: 0 }, mag: an.fr, color: C['f-f'], label: 'f' },
+          ],
+        },
+        {
+          body: an.bodies[1],
+          idx: 1,
+          tilt: 0,
+          arrows: [
+            { dir: { x: 0, y: 1 }, mag: an.T, color: C.l1, label: 'T' },
+            { dir: { x: 0, y: -1 }, mag: an.F, color: C['f-w'], label: 'W = F' },
+          ],
+        },
+      ];
+    },
+    fbdCaption: () => 'For the whole system (cart + hanger), the only unbalanced outside forces are the hanging weight F and friction f.',
+    legend(an, showV) {
+      return {
+        legend: chipH('var(--f-w)', 'W: weight') + chipH('var(--f-n)', 'N: normal force') + chipH('var(--l1)', 'T: string tension') + chipH('var(--f-f)', 'f: friction'),
+        pairs: pairsH([
+          swatch('--l1') + 'The string pulls the cart forward and the hanger up with the same tension' + (showV ? ' (' + fmt(an.T) + ' N)' : '') + '. Each pull pairs with the object pulling back on the string.',
+          'Tension is internal to the cart + hanger system, so it cancels when you treat them together: F − f = M a.',
+        ]),
+      };
+    },
+    quantities(an) {
+      const q = [];
+      const fit = LAB.fit();
+      q.push({ key: 'M', group: 'main', groupTitle: 'From your graph', label: 'Total mass M (from the slope)', unit: 'kg', value: an.M, tol: 0.05, sub: fit ? 'your best-fit slope is ' + fmt(fit.slope, 3) : 'record at least two trials first' });
+      q.push({ key: 'f', group: 'main', groupTitle: 'From your graph', label: 'Friction on the cart (from the intercept)', unit: 'N', value: an.fr, tol: 0.15, sub: fit ? 'your best-fit intercept is ' + fmt(fit.intercept, 3) : '' });
+      if (!an.hidden) {
+        q.push({ key: 'a', group: 'pred', groupTitle: 'Predict this trial', label: 'Acceleration with this hanging mass', unit: 'm/s²', value: an.a });
+        q.push({ key: 't', group: 'pred', groupTitle: 'Predict this trial', label: 'Time between the photogates', unit: 's', value: an.t, sub: fmt(LAB_D) + ' m, starting from rest' });
+        q.push({ key: 'T', group: 'more', label: 'Tension in the string', unit: 'N', value: an.T });
+      }
+      return q;
+    },
+    moreTitle: 'More',
+    solution(an) {
+      const fit = LAB.fit();
+      let h = '<section><h3>1. Newton’s second law for the whole system</h3><p>Treat the cart and hanger as one object of mass M. Tension is internal, so it cancels. The outside forces along the motion are the hanging weight F = mg (forward) and friction f (backward).</p>' +
+        '<div class="eq">F − f = M a   →   F = M·a + f</div><p>So a graph of F against a is a straight line. Its <b>slope is M</b> and its <b>intercept is f</b>. Moving mass from the cart to the hanger keeps M the same, which is what makes the graph a straight line.</p></section>';
+      h += '<section><h3>2. Getting a from the photogates</h3><p>The cart starts from rest at the first gate and travels d = ' + fmt(LAB_D) + ' m in time t, so d = ½·a·t² and a = 2d / t².</p></section>';
+      h += '<section><h3>3. Your results</h3>' + (fit
+        ? '<div class="eq">Best fit:  F = ' + fmt(fit.slope, 3) + '·a ' + (fit.intercept < 0 ? '− ' : '+ ') + fmt(Math.abs(fit.intercept), 3) + '\nSlope  → M ≈ ' + fmt(fit.slope, 3) + ' kg   (true value ' + fmt(an.M, 3) + ' kg)\nIntercept → f ≈ ' + fmt(fit.intercept, 3) + ' N   (true value ' + fmt(an.fr, 3) + ' N)</div>'
+        : '<p>Record at least two trials to fit a line.</p>') + '</section>';
+      if (!an.hidden) h += '<section><h3>4. This trial</h3><div class="eq">a = (F − f) / M = (' + fmt(an.F, 3) + ' − ' + fmt(an.fr, 3) + ') / ' + fmt(an.M, 3) + ' = ' + fmt(an.a, 3) + ' m/s²\nt = √(2d / a) = ' + fmt(an.t, 3) + ' s\nT = (cart mass)·a + f = ' + fmt(an.M - an.m, 3) + ' × ' + fmt(an.a, 3) + ' + ' + fmt(an.fr, 3) + ' = ' + fmt(an.T, 3) + ' N</div></section>';
+      return h;
+    },
+  };
+  // horizontal dimension marker
+  function dimH(ctx, view, x0, x1, y, text, color) {
+    const [p0, py] = view.P(x0, y);
+    const [p1] = view.P(x1, y);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(p0, py - 6);
+    ctx.lineTo(p0, py + 6);
+    ctx.moveTo(p1, py - 6);
+    ctx.lineTo(p1, py + 6);
+    ctx.moveTo(p0 + 7, py);
+    ctx.lineTo(p1 - 7, py);
+    ctx.stroke();
+    for (const [px, d] of [[p0, 1], [p1, -1]]) {
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px + d * 8, py - 4);
+      ctx.lineTo(px + d * 8, py + 4);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+    labelText(ctx, text, (p0 + p1) / 2, py - 12, color, 'center', 14);
+  }
+
+  /* ---------------- Third-law puzzles ---------------- */
+  const PUZZLES = [
+    ['horse', 'Horse and cart'],
+    ['tug', 'Tug-of-war'],
+    ['crash', 'Truck and car collision'],
+    ['book', 'Book on a table'],
+  ];
+  // a simple side-view horse, facing right; phase animates the legs
+  function drawHorse(ctx, view, x, phase) {
+    const P = view.P;
+    const k = view.k;
+    const body = { x, y: 1.25 };
+    ctx.save();
+    ctx.lineCap = 'round';
+    const limb = (a, b, w, color) => {
+      const [x1, y1] = P(a.x, a.y);
+      const [x2, y2] = P(b.x, b.y);
+      ctx.strokeStyle = C.scene;
+      ctx.lineWidth = w * k + 3;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = w * k;
+      ctx.stroke();
+    };
+    const coat = C.horse;
+    // legs: two far (shaded), two near
+    const legsAt = [[-0.5, 0], [0.5, Math.PI], [-0.42, Math.PI], [0.58, 0]];
+    legsAt.forEach(([dx, off], i) => {
+      const sw = 0.18 * Math.sin(phase + off);
+      const hip = { x: body.x + dx, y: body.y - 0.1 };
+      const knee = { x: hip.x + sw * 0.6, y: 0.62 };
+      const hoof = { x: hip.x + sw, y: 0.05 };
+      limb(hip, knee, 0.11, coat);
+      limb(knee, hoof, 0.08, coat);
+      limb(hoof, { x: hoof.x + 0.05, y: 0.03 }, 0.08, C.ink);
+      if (i < 2) {
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        limb(hip, knee, 0.11, C.scene);
+        limb(knee, hoof, 0.08, C.scene);
+        ctx.restore();
+      }
+    });
+    // body, neck, head, tail, mane
+    const [bx, by] = P(body.x, body.y);
+    ctx.fillStyle = coat;
+    ctx.strokeStyle = C.scene;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(bx, by, 0.78 * k, 0.3 * k, 0, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.stroke();
+    limb({ x: body.x + 0.55, y: body.y + 0.1 }, { x: body.x + 0.9, y: body.y + 0.62 }, 0.24, coat);
+    limb({ x: body.x + 0.9, y: body.y + 0.62 }, { x: body.x + 1.2, y: body.y + 0.42 }, 0.17, coat);
+    limb({ x: body.x + 0.6, y: body.y + 0.25 }, { x: body.x + 0.86, y: body.y + 0.74 }, 0.06, C['fig-hair']);
+    limb({ x: body.x - 0.76, y: body.y + 0.08 }, { x: body.x - 0.95, y: body.y - 0.45 }, 0.07, C['fig-hair']);
+    const [ex, ey] = P(body.x + 0.98, body.y + 0.66);
+    ctx.fillStyle = C.scene;
+    ctx.beginPath();
+    ctx.arc(ex, ey, 2.5, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.restore();
+  }
+  // a figure pulling on a rope; dir = +1 faces right, -1 faces left
+  function puller(ctx, view, xFeet, dir, swing) {
+    const pose = poseUpright({ x: 0, yHip: STAND_HIP - 0.16, contact: true, armA: 1.45, lean: -0.5 });
+    pose.legs[0].ankle.x -= 0.18;
+    pose.legs[0].toe.x -= 0.18;
+    pose.legs[0].knee = ik(pose.hip, pose.legs[0].ankle, FIG.thigh, FIG.shin, 1);
+    const v = { k: view.k, P: (x, y) => view.P(xFeet + dir * x, y + swing) };
+    drawFigure(ctx, v, pose);
+    return { x: xFeet + dir * pose.arms[1].hand.x, y: pose.arms[1].hand.y };
+  }
+  const PUZ = {
+    defaults: () => ({
+      p: 'horse',
+      horse: { mh: 500, mc: 300, Fg: 1200, fc: 400 },
+      tug: { mA: 300, mB: 280, FA: 2400, FB: 2100 },
+      crash: { mt: 6000, mcar: 1200, F: 60 },
+      book: { m: 1.5 },
+      mystery: { on: false, target: '' },
+    }),
+    solve(c) {
+      const g = state.g;
+      const an = { kind: 'puzzle', ok: true, p: c.p, g };
+      if (c.p === 'horse') Object.assign(an, c.horse, P.solveHorseCart(c.horse));
+      else if (c.p === 'tug') Object.assign(an, c.tug, P.solveTug(c.tug));
+      else if (c.p === 'crash') Object.assign(an, c.crash, P.solveCrash({ mt: c.crash.mt, mcar: c.crash.mcar, F: c.crash.F * 1000 }), { Fn: c.crash.F * 1000 });
+      else Object.assign(an, c.book, { W: c.book.m * g });
+      if (c.p === 'horse' && an.Fg <= an.fc) an.a = 0;
+      an.bodies = [{ name: PUZZLES.find((x) => x[0] === c.p)[1], m: 1, kind: 'block', a: an.a || 0 }];
+      an.atRest = !(an.a > 0 || (c.p === 'tug' && Math.abs(an.a) > 0));
+      return an;
+    },
+    controls(c) {
+      let h = '<div class="group"><h2>Puzzle</h2>' + selectField('Choose a puzzle', 'sel-puzzle', 'p', PUZZLES, c.p, true) + '</div>';
+      if (c.p === 'horse') {
+        h += '<div class="group"><h2>Horse and cart</h2>' +
+          numField('Mass of the horse', 'horse.mh', c.horse.mh, 'kg', { min: 100, max: 1500, step: 10 }) +
+          numField('Mass of the cart', 'horse.mc', c.horse.mc, 'kg', { min: 50, max: 2000, step: 10 }) +
+          numField('Ground pushes the horse forward', 'horse.Fg', c.horse.Fg, 'N', { min: 0, max: 10000, step: 10 }) +
+          numField('Friction on the cart', 'horse.fc', c.horse.fc, 'N', { min: 0, max: 10000, step: 10 }) +
+          '<p class="note">The horse’s hooves push back on the ground; the ground pushes the horse forward.</p></div>';
+      } else if (c.p === 'tug') {
+        h += '<div class="group"><h2>Two teams</h2>' +
+          numField('Team A (left) total mass', 'tug.mA', c.tug.mA, 'kg', { min: 50, max: 1000, step: 10 }) +
+          numField('Team B (right) total mass', 'tug.mB', c.tug.mB, 'kg', { min: 50, max: 1000, step: 10 }) +
+          numField('Ground pushes team A', 'tug.FA', c.tug.FA, 'N', { min: 0, max: 10000, step: 10 }) +
+          numField('Ground pushes team B', 'tug.FB', c.tug.FB, 'N', { min: 0, max: 10000, step: 10 }) +
+          '<p class="note">Each team digs in and pushes on the ground; the ground pushes back, away from the middle.</p></div>';
+      } else if (c.p === 'crash') {
+        h += '<div class="group"><h2>The collision</h2>' +
+          numField('Mass of the truck', 'crash.mt', c.crash.mt, 'kg', { min: 500, max: 40000, step: 100 }) +
+          numField('Mass of the car', 'crash.mcar', c.crash.mcar, 'kg', { min: 200, max: 5000, step: 50 }) +
+          numField('Force of the crash (on the car)', 'crash.F', c.crash.F, 'kN', { min: 1, max: 1000, step: 1 }) + '</div>';
+      } else {
+        h += '<div class="group"><h2>The book</h2>' + numField('Mass of the book', 'book.m', c.book.m, 'kg', { min: 0.1, max: 20, step: 0.1 }) + '</div>';
+      }
+      return h;
+    },
+    randomize(c, r) {
+      c.horse = { mh: r(300, 800, 10), mc: r(150, 600, 10), Fg: r(800, 2500, 50), fc: r(200, 700, 50) };
+      c.tug = { mA: r(200, 450, 10), mB: r(200, 450, 10), FA: r(1500, 3000, 50), FB: r(1500, 3000, 50) };
+      c.crash = { mt: r(3000, 15000, 500), mcar: r(800, 2000, 50), F: r(20, 200, 5) };
+      c.book = { m: r(0.5, 4, 0.1) };
+    },
+    load(c, num) {
+      const d = PUZ.defaults();
+      const pick = (o, dd, spec) => {
+        const out = {};
+        for (const key of Object.keys(dd)) out[key] = num((o || {})[key], dd[key], spec[key][0], spec[key][1]);
+        return out;
+      };
+      return {
+        p: PUZZLES.some((x) => x[0] === c.p) ? c.p : d.p,
+        horse: pick(c.horse, d.horse, { mh: [100, 1500], mc: [50, 2000], Fg: [0, 10000], fc: [0, 10000] }),
+        tug: pick(c.tug, d.tug, { mA: [50, 1000], mB: [50, 1000], FA: [0, 10000], FB: [0, 10000] }),
+        crash: pick(c.crash, d.crash, { mt: [500, 40000], mcar: [200, 5000], F: [1, 1000] }),
+        book: pick(c.book, d.book, { m: [0.1, 20] }),
+        mystery: d.mystery,
+      };
+    },
+    buildSim(an) {
+      if (an.p === 'crash' || an.p === 'book' || an.atRest) {
+        const msg = an.p === 'crash' ? 'This shows one instant during the crash. Use the questions and the diagrams.' : an.p === 'book' ? 'The book sits at rest. Use the questions and the diagrams.' : an.p === 'tug' ? 'The teams are evenly matched: nothing moves.' : 'The ground’s push is not more than the friction on the cart, so nothing speeds up.';
+        return { kind: 'puzzle', tStop: 0, static: true, staticMessage: msg };
+      }
+      return { kind: 'puzzle', tStop: 3, reason: 'Time is up' };
+    },
+    motion(an, t) {
+      const a = an.a || 0;
+      return { s: 0.5 * a * t * t, v: a * t, a };
+    },
+    noGraph: () => true,
+    graphNames: { x: '', v: '', a: '' },
+    graphValue: () => 0,
+    graphLabel: { x: '', v: '', a: '' },
+    draw(ctx, W, H, t) {
+      const an = analysis;
+      if (an.p === 'horse') return PUZ.drawHorseCart(ctx, W, H, t);
+      if (an.p === 'tug') return PUZ.drawTug(ctx, W, H, t);
+      if (an.p === 'crash') return PUZ.drawCrash(ctx, W, H);
+      return PUZ.drawBook(ctx, W, H);
+    },
+    drawHorseCart(ctx, W, H, t) {
+      const an = analysis;
+      const s = 0.5 * an.a * t * t;
+      const view = fitView({ x0: s - 4.7, x1: s + 3.3, y0: -0.4, y1: 2.6 }, W, H);
+      const P = view.P;
+      drawGrid(ctx, W, H, view);
+      drawFloor(ctx, view, s - 5, s + 5);
+      for (let x = Math.floor(s - 5); x <= s + 5; x++) {
+        const [mx, my] = P(x, 0);
+        ctx.save();
+        ctx.strokeStyle = C.muted;
+        ctx.beginPath();
+        ctx.moveTo(mx, my);
+        ctx.lineTo(mx, my + 8);
+        ctx.stroke();
+        ctx.restore();
+      }
+      // cart
+      const cartX = s - 2.6;
+      boxW(ctx, view, cartX - 0.7, 0.55, cartX + 0.7, 1.15, C.b2, C.ink, 0.04);
+      wheel(ctx, view, cartX - 0.4, 0.38, 0.35);
+      wheel(ctx, view, cartX + 0.4, 0.38, 0.35);
+      // shafts / rope from the cart to the horse
+      ctx.save();
+      ctx.strokeStyle = C.ink;
+      ctx.lineWidth = 3;
+      const [r1x, r1y] = P(cartX + 0.7, 1.0);
+      const [r2x, r2y] = P(s - 0.75, 1.2);
+      ctx.beginPath();
+      ctx.moveTo(r1x, r1y);
+      ctx.lineTo(r2x, r2y);
+      ctx.stroke();
+      ctx.restore();
+      drawHorse(ctx, view, s, s * 5);
+      // forces
+      const sc = 70 / Math.max(an.Fg, an.T, an.fc, 1);
+      forceArrow(ctx, view, { x: s + 0.5, y: 0.03 }, 1, 0, Math.max(24, an.Fg * sc), C['f-f'], 'ground pushes horse');
+      forceArrow(ctx, view, { x: s - 0.78, y: 1.4 }, -1, 0, Math.max(24, an.T * sc), C.l1, 'T');
+      forceArrow(ctx, view, { x: cartX + 0.7, y: 0.85 }, 1, 0, Math.max(24, an.T * sc), C.l1, 'T');
+      forceArrow(ctx, view, { x: cartX - 0.7, y: 0.2 }, -1, 0, Math.max(24, an.fc * sc), C['f-f'], 'friction');
+      labelText(ctx, an.a > 0 ? 'Speeding up' : 'Not speeding up', 12, 18, C.ink, 'left', 15, 700, C.fontBody);
+    },
+    drawTug(ctx, W, H, t) {
+      const an = analysis;
+      const s = 0.5 * an.a * t * t; // + toward team A (left)
+      const shift = -s;
+      const view = fitView({ x0: -5, x1: 5, y0: -0.4, y1: 2.3 }, W, H);
+      const P = view.P;
+      drawGrid(ctx, W, H, view);
+      drawFloor(ctx, view, -5, 5);
+      // centre line and the rope's flag
+      const [cx0, cy0] = P(0, 0);
+      const [, cy1] = P(0, 0.4);
+      ctx.save();
+      ctx.strokeStyle = C.accent;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(cx0, cy0);
+      ctx.lineTo(cx0, cy1);
+      ctx.stroke();
+      ctx.restore();
+      // teams: two figures each
+      const handsA = [puller(ctx, view, -2.9 + shift, -1, 0), puller(ctx, view, -1.9 + shift, -1, 0)];
+      const handsB = [puller(ctx, view, 1.9 + shift, 1, 0), puller(ctx, view, 2.9 + shift, 1, 0)];
+      const ry = handsA[1].y;
+      ctx.save();
+      ctx.strokeStyle = C['f-f'];
+      ctx.lineWidth = 4;
+      const [l0x, ly] = P(handsA[0].x - 0.2, ry);
+      const [l1x] = P(handsB[1].x + 0.2, ry);
+      ctx.beginPath();
+      ctx.moveTo(l0x, ly);
+      ctx.lineTo(l1x, ly);
+      ctx.stroke();
+      ctx.restore();
+      const [fx, fy] = P(shift, ry);
+      ctx.save();
+      ctx.fillStyle = C['f-w'];
+      ctx.beginPath();
+      ctx.moveTo(fx, fy);
+      ctx.lineTo(fx - 8, fy + 22);
+      ctx.lineTo(fx + 8, fy + 22);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      labelText(ctx, 'Team A', P(-2.4 + shift, 0)[0], P(0, 2.05)[1], C.ink, 'center', 15, 700, C.fontBody);
+      labelText(ctx, 'Team B', P(2.4 + shift, 0)[0], P(0, 2.05)[1], C.ink, 'center', 15, 700, C.fontBody);
+      const sc = 70 / Math.max(an.FA, an.FB, an.T, 1);
+      forceArrow(ctx, view, { x: -2.6 + shift, y: 0.03 }, -1, 0, Math.max(24, an.FA * sc), C['f-n'], 'ground', 'right');
+      forceArrow(ctx, view, { x: 2.6 + shift, y: 0.03 }, 1, 0, Math.max(24, an.FB * sc), C['f-n'], 'ground', 'left');
+      labelText(ctx, an.winner === 'tie' ? 'Evenly matched' : 'Team ' + an.winner + ' is winning', 12, 18, C.ink, 'left', 15, 700, C.fontBody);
+    },
+    drawCrash(ctx, W, H) {
+      const an = analysis;
+      const view = fitView({ x0: -4.4, x1: 3.4, y0: -0.4, y1: 3.4 }, W, H);
+      const P = view.P;
+      drawGrid(ctx, W, H, view);
+      drawFloor(ctx, view, -4.4, 3.4);
+      // truck from the left, car from the right, touching at x = 0
+      boxW(ctx, view, -4.0, 0.45, -1.3, 2.7, C.b1, C.ink, 0.05);
+      boxW(ctx, view, -1.3, 0.45, 0, 2.0, C.b1, C.ink, 0.05);
+      boxW(ctx, view, -1.05, 1.35, -0.25, 1.85, C.scene, C.ink, 0.03);
+      [-3.4, -2.2, -0.6].forEach((x) => wheel(ctx, view, x, 0.42, 0.4));
+      boxW(ctx, view, 0, 0.35, 2.7, 1.05, C.b4, C.ink, 0.08);
+      boxW(ctx, view, 0.6, 1.05, 2.1, 1.55, C.b4, C.ink, 0.08);
+      [0.6, 2.1].forEach((x) => wheel(ctx, view, x, 0.33, 0.3));
+      labelText(ctx, 'Truck ' + fmt(an.mt, 0) + ' kg', P(-2.6, 0)[0], P(0, 3.0)[1], C.ink, 'center', 15, 700, C.fontBody);
+      labelText(ctx, 'Car ' + fmt(an.mcar, 0) + ' kg', P(1.35, 0)[0], P(0, 1.85)[1], C.ink, 'center', 15, 700, C.fontBody);
+      // the equal and opposite crash forces at the contact point
+      forceArrow(ctx, view, { x: 0.05, y: 0.75 }, 1, 0, 90, C.l2, 'truck on car');
+      forceArrow(ctx, view, { x: -0.05, y: 1.25 }, -1, 0, 90, C.l2, 'car on truck');
+      labelText(ctx, 'During the crash', 12, 18, C.ink, 'left', 15, 700, C.fontBody);
+    },
+    drawBook(ctx, W, H) {
+      const an = analysis;
+      const view = fitView({ x0: -2.4, x1: 2.4, y0: -0.6, y1: 2.0 }, W, H);
+      const P = view.P;
+      drawGrid(ctx, W, H, view);
+      // Earth's surface as a gentle curve
+      const [ex0, ey0] = P(-2.4, -0.25);
+      const [ex1] = P(2.4, -0.25);
+      const [, eyb] = P(0, -0.6);
+      ctx.save();
+      ctx.fillStyle = C.track;
+      ctx.beginPath();
+      ctx.moveTo(ex0, ey0);
+      ctx.quadraticCurveTo((ex0 + ex1) / 2, ey0 - 18, ex1, ey0);
+      ctx.lineTo(ex1, eyb);
+      ctx.lineTo(ex0, eyb);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      labelText(ctx, 'Earth', P(-1.8, 0)[0], P(0, -0.45)[1], C.ink, 'left', 15, 700, C.fontBody);
+      // table
+      boxW(ctx, view, -1.1, 0.75, 1.1, 0.85, C.bench);
+      boxW(ctx, view, -1.0, -0.2, -0.9, 0.75, C.bench);
+      boxW(ctx, view, 0.9, -0.2, 1.0, 0.75, C.bench);
+      // book
+      boxW(ctx, view, -0.35, 0.85, 0.35, 1.02, C.b3, C.ink, 0.02);
+      labelText(ctx, trimNum(an.m) + ' kg book', P(0.45, 0)[0], P(0, 0.94)[1], C.ink, 'left', 14);
+      forceArrow(ctx, view, { x: -0.12, y: 0.94 }, 0, -1, 70, C['f-w'], 'W (Earth pulls book)');
+      forceArrow(ctx, view, { x: 0.12, y: 1.02 }, 0, 1, 70, C['f-n'], 'N (table pushes book)');
+      forceArrow(ctx, view, { x: 1.7, y: -0.25 }, 0, 1, 50, C['f-w'], 'book pulls Earth');
+      labelText(ctx, 'At rest on the table', 12, 18, C.ink, 'left', 15, 700, C.fontBody);
+    },
+    forceSets(an) {
+      const set = (name, arrows, pose) => ({ body: { name, m: null, kind: pose ? 'person' : 'hanging' }, idx: 0, tilt: 0, arrows, pose });
+      if (an.p === 'horse') {
+        return [
+          set('Horse', [
+            { dir: { x: 1, y: 0 }, mag: an.Fg, color: C['f-f'], label: 'F_ground' },
+            { dir: { x: -1, y: 0 }, mag: an.T, color: C.l1, label: 'T (cart)' },
+          ]),
+          set('Cart', [
+            { dir: { x: 1, y: 0 }, mag: an.T, color: C.l1, label: 'T (horse)' },
+            { dir: { x: -1, y: 0 }, mag: an.fc, color: C['f-f'], label: 'f' },
+          ]),
+        ];
+      }
+      if (an.p === 'tug') {
+        return [
+          set('Team A', [
+            { dir: { x: -1, y: 0 }, mag: an.FA, color: C['f-n'], label: 'F_ground' },
+            { dir: { x: 1, y: 0 }, mag: an.T, color: C['f-f'], label: 'T' },
+          ]),
+          set('Team B', [
+            { dir: { x: -1, y: 0 }, mag: an.T, color: C['f-f'], label: 'T' },
+            { dir: { x: 1, y: 0 }, mag: an.FB, color: C['f-n'], label: 'F_ground' },
+          ]),
+        ];
+      }
+      if (an.p === 'crash') {
+        return [
+          set('Truck', [{ dir: { x: -1, y: 0 }, mag: an.Fn, color: C.l2, label: 'F (car on truck)' }]),
+          set('Car', [{ dir: { x: 1, y: 0 }, mag: an.Fn, color: C.l2, label: 'F (truck on car)' }]),
+        ];
+      }
+      return [
+        set('Book', [
+          { dir: { x: 0, y: -1 }, mag: an.W, color: C['f-w'], label: 'W' },
+          { dir: { x: 0, y: 1 }, mag: an.W, color: C['f-n'], label: 'N' },
+        ]),
+        set('Earth', [{ dir: { x: 0, y: 1 }, mag: an.W, color: C['f-w'], label: 'W′ (book pulls Earth)' }]),
+      ];
+    },
+    fbdCaption: (an) =>
+      ({
+        horse: 'Only horizontal forces are shown. The two T arrows are a third-law pair: same size, but one acts on the horse and one on the cart.',
+        tug: 'Only horizontal forces are shown. The rope pulls each team toward the middle with the same tension T.',
+        crash: 'The two crash forces are a third-law pair: equal in size, opposite in direction, on different vehicles.',
+        book: 'W and N both act on the book, so they are not a pair. W pairs with the book’s pull on Earth (W′).',
+      })[an.p],
+    legend(an, showV) {
+      const v = (x) => (showV ? ' (' + fmt(x, x >= 1000 ? 0 : 2) + ' N)' : '');
+      const L = {
+        horse: [chipH('var(--f-f)', 'ground and friction forces'), chipH('var(--l1)', 'T: pull through the harness')],
+        tug: [chipH('var(--f-n)', 'F_ground: the ground pushes a team'), chipH('var(--f-f)', 'T: rope tension')],
+        crash: [chipH('var(--l2)', 'the crash forces: a third-law pair')],
+        book: [chipH('var(--f-w)', 'W, W′: Earth and book pull on each other'), chipH('var(--f-n)', 'N: the table pushes up')],
+      }[an.p].join('');
+      const items = {
+        horse: [
+          swatch('--l1') + 'The horse pulls the cart forward and the cart pulls the horse back with equal force T' + v(an.T) + '. They act on <b>different objects</b>, so they never cancel each other.',
+          'The horse speeds up because the ground pushes it forward' + v(an.Fg) + ' harder than the cart pulls it back. The cart speeds up because T is bigger than the friction on it' + v(an.fc) + '.',
+          'The partner of the ground’s push is the horse’s hooves pushing back on the ground.',
+        ],
+        tug: [
+          swatch('--f-f') + 'The rope pulls both teams with the <b>same</b> tension T' + v(an.T) + '. So pulling harder on the rope cannot win by itself.',
+          'The team that pushes harder on the ground wins: the ground’s push is the only outside horizontal force on each team.',
+          'Each team pushes on the ground and the ground pushes back on the team, away from the middle. Heavier teams with good shoes can push harder without slipping.',
+        ],
+        crash: [
+          swatch('--l2') + 'The truck pushes on the car exactly as hard as the car pushes on the truck' + v(an.Fn) + ', even though the truck is heavier.',
+          'The <b>accelerations</b> are different: a = F/m, so the lighter car gets a much bigger acceleration. That is why the car’s passengers are hurt more.',
+        ],
+        book: [
+          swatch('--f-w') + 'Earth pulls the book down (W) and the book pulls Earth up (W′) just as hard' + v(an.W) + '. That is the third-law pair for weight.',
+          swatch('--f-n') + 'The table pushes up on the book (N) and the book pushes down on the table just as hard. That is the pair for N.',
+          'W and N are equal here only because the book is at rest (Newton’s first law), not because of the third law.',
+        ],
+      }[an.p];
+      return { legend: L, pairs: pairsH(items) };
+    },
+    mcq(an) {
+      const Q = {
+        horse: [
+          { key: 'h1', q: 'The cart pulls back on the horse just as hard as the horse pulls forward on the cart. So how can they speed up?', options: ['The horse pulls a little harder than the cart pulls back', 'Those two forces act on different objects. The horse speeds up because the ground pushes it forward harder than the cart pulls back', 'They can’t speed up; they can only keep moving at a constant speed', 'The cart’s pull back happens a moment later, so the horse gets ahead'], correct: 1, why: 'Third-law pairs act on different objects, so they never cancel. Look at each object’s own forces.' },
+          { key: 'h2', q: 'What outside force pushes the horse-and-cart system forward?', options: ['The tension in the harness', 'The ground pushing forward on the horse’s hooves', 'The horse pushing on itself', 'The cart pushing the horse'], correct: 1, why: 'Tension is internal to the horse + cart system. The only forward outside force is the ground’s push on the hooves.' },
+        ],
+        tug: [
+          { key: 't1', q: 'Which team wins a tug-of-war?', options: ['The team that pulls harder on the rope', 'The team that pushes harder on the ground', 'Neither: the rope pulls both teams equally, so nobody can win', 'Always the heavier team'], correct: 1, why: 'The rope pulls both teams with the same tension, so the difference must come from the ground.' },
+          { key: 't2', q: 'Compare the rope’s pull on team A and on team B.', options: ['It is larger on the winning team', 'It is the same on both teams', 'It is larger on the losing team'], correct: 1, why: 'A light rope has the same tension all along it.' },
+        ],
+        crash: [
+          { key: 'c1', q: 'During the crash, which vehicle pushes harder on the other?', options: ['The truck pushes harder on the car', 'The car pushes harder on the truck', 'They push on each other equally hard'], correct: 2, why: 'Newton’s third law: the forces in a pair are always equal in size.' },
+          { key: 'c2', q: 'Which vehicle has the larger acceleration during the crash?', options: ['The truck', 'The car', 'They have the same acceleration'], correct: 1, why: 'a = F/m with the same F, so the smaller mass gets the bigger acceleration.' },
+        ],
+        book: [
+          { key: 'b1', q: 'What is the third-law partner of the book’s weight (Earth pulling the book down)?', options: ['The normal force from the table pushing up on the book', 'The book pulling up on Earth', 'The table’s weight', 'The book pushing down on the table'], correct: 1, why: 'A pair involves the same two objects: Earth on book ↔ book on Earth.' },
+          { key: 'b2', q: 'The table’s upward push on the book (N) pairs with:', options: ['The book’s weight', 'The book pushing down on the table', 'Earth pulling the table down'], correct: 1, why: 'Table on book ↔ book on table.' },
+        ],
+      };
+      return Q[an.p];
+    },
+    quantities(an) {
+      const q = [];
+      const row = (key, label, unit, value, sub) => q.push({ key, group: 'main', groupTitle: 'Numbers', label, unit, value, sub });
+      if (an.p === 'horse') {
+        row('a', 'Acceleration of the horse and cart', 'm/s²', an.a);
+        row('T', 'Tension in the harness (T)', 'N', an.T);
+        row('netc', 'Net force on the cart', 'N', an.mc * an.a);
+      } else if (an.p === 'tug') {
+        row('a', 'Acceleration of the teams and rope', 'm/s²', Math.abs(an.a));
+        row('T', 'Tension in the rope', 'N', an.T);
+      } else if (an.p === 'crash') {
+        row('ac', 'Car’s acceleration during the crash', 'm/s²', an.ac);
+        row('at', 'Truck’s acceleration during the crash', 'm/s²', an.at);
+        row('ratio', 'How many times bigger is the car’s acceleration?', '×', an.ac / an.at);
+      } else {
+        row('W', 'Weight of the book', 'N', an.W);
+        row('N', 'Normal force on the book', 'N', an.W);
+        row('Wp', 'The book’s pull on Earth', 'N', an.W);
+      }
+      return q;
+    },
+    moreTitle: 'More',
+    solution(an) {
+      if (an.p === 'horse') {
+        return '<section><h3>1. The key idea</h3><p>The horse pulls the cart (T forward on the cart) and the cart pulls the horse (T backward on the horse). These are a third-law pair, so they are equal, but they act on <b>different objects</b>. To find out whether something speeds up, add only the forces acting <b>on that object</b>.</p></section>' +
+          '<section><h3>2. The whole system</h3><p>Treat horse + cart as one object of mass ' + fmt(an.mh + an.mc, 0) + ' kg. T is internal and cancels. The outside horizontal forces are the ground’s push F_ground = ' + fmt(an.Fg, 0) + ' N forward and friction on the cart f = ' + fmt(an.fc, 0) + ' N backward.</p>' +
+          '<div class="eq">a = (F_ground − f) / (m_horse + m_cart) = (' + fmt(an.Fg, 0) + ' − ' + fmt(an.fc, 0) + ') / ' + fmt(an.mh + an.mc, 0) + ' = ' + fmt(an.a) + ' m/s²</div></section>' +
+          '<section><h3>3. The cart alone</h3><div class="eq">T − f = m_cart·a   →   T = ' + fmt(an.mc, 0) + ' × ' + fmt(an.a) + ' + ' + fmt(an.fc, 0) + ' = ' + fmt(an.T) + ' N</div>' +
+          '<p>Check the horse alone: F_ground − T = ' + fmt(an.Fg, 0) + ' − ' + fmt(an.T) + ' = ' + fmt(an.Fg - an.T) + ' N = m_horse·a = ' + fmt(an.mh * an.a) + ' N. The horse speeds up because the ground pushes it harder than the cart pulls back.</p></section>';
+      }
+      if (an.p === 'tug') {
+        return '<section><h3>1. The key idea</h3><p>The rope pulls each team toward the middle with the same tension T. So the rope cannot decide the winner. The outside forces that differ are the ground’s pushes on the teams’ feet.</p></section>' +
+          '<section><h3>2. The whole system</h3><p>Take + toward team A. Treat both teams and the rope as one object. Tension is internal.</p>' +
+          '<div class="eq">a = (F_A − F_B) / (m_A + m_B) = (' + fmt(an.FA, 0) + ' − ' + fmt(an.FB, 0) + ') / ' + fmt(an.mA + an.mB, 0) + ' = ' + fmt(an.a) + ' m/s²</div></section>' +
+          '<section><h3>3. The rope’s tension</h3><p>Team B alone: the rope pulls it toward A with T, and the ground pushes it away with F_B.</p>' +
+          '<div class="eq">T − F_B = m_B·a   →   T = ' + fmt(an.FB, 0) + ' + ' + fmt(an.mB, 0) + ' × ' + fmt(an.a) + ' = ' + fmt(an.T) + ' N</div>' +
+          '<p>' + (an.winner === 'tie' ? 'The ground pushes are equal, so nobody wins.' : 'Team ' + an.winner + ' wins because the ground pushes it harder.') + '</p></section>';
+      }
+      if (an.p === 'crash') {
+        return '<section><h3>1. Forces</h3><p>By Newton’s third law the truck pushes on the car exactly as hard as the car pushes on the truck: ' + fmt(an.Fn, 0) + ' N each, in opposite directions.</p></section>' +
+          '<section><h3>2. Accelerations</h3><div class="eq">Car:   a = F / m = ' + fmt(an.Fn, 0) + ' / ' + fmt(an.mcar, 0) + ' = ' + fmt(an.ac) + ' m/s²\nTruck: a = F / m = ' + fmt(an.Fn, 0) + ' / ' + fmt(an.mt, 0) + ' = ' + fmt(an.at) + ' m/s²\nRatio = ' + fmt(an.ac / an.at) + '  (the same as the mass ratio ' + fmt(an.mt, 0) + ' / ' + fmt(an.mcar, 0) + ')</div>' +
+          '<p>Equal forces, unequal accelerations. The lighter car changes its velocity much more.</p></section>';
+      }
+      const aE = an.W / 5.97e24;
+      return '<section><h3>1. Find the pairs</h3><p>A third-law pair always involves the same two objects, swapped: “A pushes B” pairs with “B pushes A”.</p>' +
+        '<div class="eq">Earth pulls the book down (W = ' + fmt(an.W) + ' N)   ↔   the book pulls Earth up (W′ = ' + fmt(an.W) + ' N)\nThe table pushes the book up (N)   ↔   the book pushes the table down</div></section>' +
+        '<section><h3>2. Why are W and N equal?</h3><p>Both act on the book, and the book is at rest, so they balance by <b>Newton’s first law</b>: N = W = ' + fmt(an.W) + ' N. If the table were in an accelerating elevator, N and W would differ, but each pair would still be equal.</p></section>' +
+        '<section><h3>3. Does Earth move?</h3><p>The book pulls Earth up with ' + fmt(an.W) + ' N, giving Earth an acceleration of about ' + aE.toExponential(1) + ' m/s² (Earth’s mass is 5.97 × 10²⁴ kg). It’s real, just far too small to notice.</p></section>';
+    },
+  };
+
+  const XS = { elevator: ELEV, body: BODY, traction: BODY, traffic: STATICS, wall: STATICS, lab: LAB, puzzle: PUZ };
   const xsFor = (an) => (an && XS[an.kind]) || null;
-  const scenarioModule = () => ({ elevator: ELEV, body: BODY })[state.scenario] || null;
+  const MODULES = { elevator: ELEV, body: BODY, statics: STATICS, lab: LAB, puzzles: PUZ };
+  const scenarioModule = () => MODULES[state.scenario] || null;
 
   /* ======================================================================
    * Readouts, status and animation
@@ -3520,16 +4744,23 @@
       b.hidden = b.dataset.graph === 'a' && hideA;
     });
     // an equilibrium problem has no motion to graph
-    const isStatic = !!(sim && sim.static);
-    $('tab-graph').hidden = isStatic;
-    if (isStatic && ui.tab === 'graph') showTab('check');
+    const isLab = state.scenario === 'lab';
+    const noGraph = !isLab && (!!(sim && sim.static) || !!(xs && xs.noGraph && analysis.ok && xs.noGraph(analysis)));
+    $('tab-graph').hidden = noGraph;
+    $('tab-graph').textContent = isLab ? 'Data & graph' : 'Motion graph';
+    document.querySelector('#panel-graph .seg').hidden = isLab;
+    $('lab-data').hidden = !isLab;
+    if (isLab) LAB.renderData();
+    if (noGraph && ui.tab === 'graph') showTab('check');
     $('fbd-caption').textContent = xs && xs.fbdCaption && analysis.ok ? xs.fbdCaption(analysis, anim.t) : '';
     $('fbd-caption').hidden = !$('fbd-caption').textContent;
     if (ui.graph === 'a' && hideA) {
       ui.graph = 'x';
       document.querySelectorAll('[data-graph]').forEach((x) => x.classList.toggle('on', x.dataset.graph === 'x'));
     }
-    $('graph-hint').textContent = launching
+    $('graph-hint').textContent = isLab
+      ? 'Each run adds a point. A straight line through the points has slope M (the total mass) and intercept f (the friction).'
+      : launching
       ? 'Press Play to draw the graph. On the ramp the block speeds up; in the air vₓ stays constant while v_y grows at g.'
       : state.scenario === 'elevator'
         ? 'Press Play to draw the graph. Watch the scale reading jump above or below the true weight whenever the elevator accelerates.'
@@ -3595,7 +4826,7 @@
     }
     const pw = plusWord();
     if (sim && sim.static) {
-      st.textContent = 'This is an equilibrium problem: the leg and the weight stay at rest. Use the diagrams and Predict & check.';
+      st.textContent = sim.staticMessage || 'This is an equilibrium problem: the leg and the weight stay at rest. Use the diagrams and Predict & check.';
       return;
     }
     if (anim.t === 0 && !anim.playing) {
@@ -3646,6 +4877,7 @@
       anim.done = true;
       updatePlayButton();
       updateStatus();
+      if (state.scenario === 'lab' && analysis.ok && analysis.a > 0) LAB.onRunEnd(analysis);
     }
     drawScene();
     updateReadouts();
@@ -3781,6 +5013,18 @@
     $('check-rows').addEventListener('input', (e) => {
       if (e.target.dataset.key) ui.pred[e.target.dataset.key] = e.target.value;
     });
+    $('check-rows').addEventListener('change', (e) => {
+      if (e.target.type === 'radio') ui.pred['mc:' + e.target.name.slice(3)] = e.target.value;
+    });
+    $('lab-data').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-labdel]');
+      if (!b) return;
+      ui.labTrials.splice(+b.dataset.labdel, 1);
+      LAB.renderData();
+      renderControls();
+      renderCheck();
+      drawGraph();
+    });
     $('btn-reveal').addEventListener('click', () => {
       ui.revealed = true;
       ui.solutionOpen = true;
@@ -3796,7 +5040,9 @@
     $('btn-clear').addEventListener('click', () => {
       ui.pred = {};
       ui.revealed = false;
-      document.querySelectorAll('#check-rows input').forEach((i) => (i.value = ''));
+      document.querySelectorAll('#check-rows input[type=number]').forEach((i) => (i.value = ''));
+      document.querySelectorAll('#check-rows input[type=radio]').forEach((i) => (i.checked = false));
+      ui.checkSig = '';
       renderCheck();
     });
     $('btn-unlock').addEventListener('click', () => {

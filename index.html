@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=JetBrains+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="css/style.css?v=202611091251">
+<link rel="stylesheet" href="css/style.css?v=202611091309">
 </head>
 <body>
 <div class="page">
@@ -43,6 +43,18 @@
       <button type="button" role="tab" id="sc-body" data-scenario="body">
         <svg viewBox="0 0 40 32" aria-hidden="true"><circle cx="20" cy="5" r="3"/><line x1="20" y1="8" x2="20" y2="18"/><line x1="20" y1="11" x2="13" y2="7"/><line x1="20" y1="11" x2="27" y2="7"/><line x1="20" y1="18" x2="15" y2="23"/><line x1="15" y1="23" x2="17" y2="29"/><line x1="20" y1="18" x2="25" y2="23"/><line x1="25" y1="23" x2="23" y2="29"/><line x1="8" y1="30" x2="32" y2="30"/></svg>
         <span>Human body</span>
+      </button>
+      <button type="button" role="tab" id="sc-statics" data-scenario="statics">
+        <svg viewBox="0 0 40 32" aria-hidden="true"><line x1="3" y1="3" x2="3" y2="30"/><line x1="37" y1="3" x2="37" y2="30"/><polyline points="3,6 20,13 37,8"/><line x1="20" y1="13" x2="20" y2="16"/><rect x="16" y="16" width="8" height="13" rx="1"/><circle cx="20" cy="19.5" r="1.4"/><circle cx="20" cy="22.5" r="1.4"/><circle cx="20" cy="25.5" r="1.4"/></svg>
+        <span>Equilibrium</span>
+      </button>
+      <button type="button" role="tab" id="sc-lab" data-scenario="lab">
+        <svg viewBox="0 0 40 32" aria-hidden="true"><line x1="4" y1="28" x2="4" y2="4"/><line x1="4" y1="28" x2="37" y2="28"/><line x1="6" y1="24" x2="35" y2="6"/><circle cx="11" cy="21" r="1.8"/><circle cx="18" cy="16.5" r="1.8"/><circle cx="25" cy="12.5" r="1.8"/><circle cx="32" cy="8" r="1.8"/></svg>
+        <span>F = ma lab</span>
+      </button>
+      <button type="button" role="tab" id="sc-puzzles" data-scenario="puzzles">
+        <svg viewBox="0 0 40 32" aria-hidden="true"><polyline points="4,16 16,16"/><polyline points="12,12 16,16 12,20"/><polyline points="36,16 24,16"/><polyline points="28,12 24,16 28,20"/><text x="20" y="9" font-size="9" text-anchor="middle" stroke="none" fill="currentColor">?</text></svg>
+        <span>Third-law puzzles</span>
       </button>
     </nav>
   </header>
@@ -124,6 +136,7 @@
           <p class="hint" id="graph-hint">Press Play to draw the graph for the tracked object. The slope of the velocity–time graph is the acceleration.</p>
         </div>
         <div class="graph-wrap"><canvas id="graph" aria-label="Motion graph"></canvas></div>
+        <div id="lab-data" hidden></div>
       </div>
 
       <div class="panel" id="panel-solution" role="tabpanel" aria-labelledby="tab-solution" hidden>
@@ -140,7 +153,7 @@
     <p>Strings and pulleys are massless and frictionless. Every run starts from rest. Positive directions: right or up the incline for blocks on a surface, down for a hanging block, and up for mass 1 / down for mass 2 in the Atwood machine.</p>
   </footer>
 </div>
-<script src="js/physics.js?v=202611091251"></script>
-<script src="js/app.js?v=202611091251"></script>
+<script src="js/physics.js?v=202611091309"></script>
+<script src="js/app.js?v=202611091309"></script>
 </body>
 </html>
