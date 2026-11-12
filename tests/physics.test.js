@@ -393,3 +393,65 @@ test('double pendulum: big swings are sensitive to the start, small swings are n
   assert.ok(small < 0.01, 'small-swing separation ' + small);
   assert.ok(big > 0.5, 'big-swing separation ' + big);
 });
+
+test('logistic map: fixed point, period 2, chaos', () => {
+  const fp = P.logisticSettle(2.5);
+  close(fp[fp.length - 1], 1 - 1 / 2.5, 1e-9);
+  assert.equal(P.countCycle(P.logisticSettle(2.5)), 1);
+  assert.equal(P.countCycle(P.logisticSettle(3.2)), 2);
+  assert.equal(P.countCycle(P.logisticSettle(3.5)), 4);
+  assert.equal(P.countCycle(P.logisticSettle(3.9)), Infinity);
+});
+
+test('driven pendulum: period 1 at A = 0.9, chaos at A = 1.15 (q = 2, W = 2/3)', () => {
+  const base = { g, L: 1, q: 2, W: 2 / 3 };
+  const per = P.strobeDriven({ ...base, A: 0.9 }, [0.2, 0, 0], 150, 40);
+  assert.equal(P.countCycle(per.pts.map((q) => q[1]), 1e-3), 1);
+  const ch = P.strobeDriven({ ...base, A: 1.15 }, [0.2, 0, 0], 150, 60);
+  assert.equal(P.countCycle(ch.pts.map((q) => q[1]), 1e-3), Infinity);
+});
+
+test('Lorenz: twins 0.001 apart separate', () => {
+  const p = { sigma: 10, rho: 28, beta: 8 / 3 };
+  const a = P.simulatePendulum('lorenz', p, [1, 1, 1], 30, 0.002, 0.01);
+  const b = P.simulatePendulum('lorenz', p, [1.001, 1, 1], 30, 0.002, 0.01);
+  const n = a.t.length - 1;
+  assert.ok(Math.abs(a.y[0][n] - b.y[0][n]) > 1);
+  // below rho = 1 everything decays to the origin
+  const c = P.simulatePendulum('lorenz', { ...p, rho: 0.5 }, [1, 1, 1], 30, 0.002, 0.01);
+  assert.ok(Math.abs(c.y[0][c.t.length - 1]) < 1e-3);
+});
+
+test('magnetic pendulum comes to rest over a magnet', () => {
+  const p = { k: 0.5, b: 0.2, d: 0.25, s: 1 };
+  const r = P.magnetSettle(p, 1.8, 0.4);
+  assert.ok(r.magnet >= 0 && r.magnet <= 2);
+  assert.ok(r.t < 40);
+});
+
+test('bouncing ball: a plate gentler than g never launches; a rigid floor bounces lower each time', () => {
+  const gentle = P.bounceSim({ A: 0.0005, f: 10, e: 0.8, g }, 3, { t: 0, y: 0.0005, v: 0 });
+  assert.ok(gentle.Gam < 1);
+  const drop = P.bounceSim({ A: 1e-9, f: 10, e: 0.5, g }, 2, { t: 0, y: 0.2, v: 0 });
+  const v1 = drop.impacts[0].vrel;
+  const v2 = drop.impacts[1].vrel;
+  close(v1, Math.sqrt(2 * g * 0.2), 1e-3);
+  close(v2, 0.5 * v1, 1e-3);
+});
+
+test('spectrum finds the frequency of a sine wave', () => {
+  const dt = 0.01;
+  const vals = Array.from({ length: 4096 }, (_, i) => Math.sin(2 * Math.PI * 2.5 * i * dt));
+  const sp = P.spectrum(vals, dt);
+  let best = 0;
+  for (let k = 1; k < sp.mag.length; k++) if (sp.mag[k] > sp.mag[best]) best = k;
+  close(sp.freq[best], 2.5, 0.05);
+});
+
+test('double pendulum flip time and Poincare section', () => {
+  const p = { g, m1: 1, m2: 1, L1: 1, L2: 1 };
+  assert.equal(P.flipTime(p, 0.3, 0.3, 20), Infinity);
+  assert.ok(isFinite(P.flipTime(p, 2.8, 2.8, 20)));
+  const pts = P.poincareDouble(p, [2.1, 0, -0.5, 0], 100);
+  assert.ok(pts.length > 10);
+});

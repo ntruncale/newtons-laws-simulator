@@ -644,6 +644,60 @@
     },
   };
 
+  /* Driven, damped pendulum: y = [theta, omega, drive phase].
+   * theta'' = -w0^2 sin(theta) - (w0/q) theta' + A w0^2 cos(phase), phase' = W w0,
+   * where w0 = sqrt(g/L), q is the quality factor, A the drive strength and
+   * W the drive frequency, both relative to the natural frequency w0. */
+  PENDULUMS.driven = {
+    size: 3,
+    rhs(p) {
+      const w0 = Math.sqrt(p.g / p.L);
+      return (y, out) => {
+        out[0] = y[1];
+        out[1] = -w0 * w0 * Math.sin(y[0]) - (w0 / p.q) * y[1] + p.A * w0 * w0 * Math.cos(y[2]);
+        out[2] = p.W * w0;
+      };
+    },
+    energy: (p, y) => 0.5 * p.L * p.L * y[1] * y[1] - p.g * p.L * Math.cos(y[0]),
+  };
+  /* Lorenz equations: y = [x, y, z]. */
+  PENDULUMS.lorenz = {
+    size: 3,
+    rhs(p) {
+      return (y, out) => {
+        out[0] = p.sigma * (y[1] - y[0]);
+        out[1] = y[0] * (p.rho - y[2]) - y[1];
+        out[2] = y[0] * y[1] - p.beta * y[2];
+      };
+    },
+  };
+  /* Magnetic pendulum (top view, small swings): y = [x, vx, y, vy].
+   * A spring-like pull toward the centre, friction, and three magnets
+   * below the plane at height d that attract with strength s. */
+  const MAGNETS = [90, 210, 330].map((a) => ({ x: Math.cos((a * Math.PI) / 180), y: Math.sin((a * Math.PI) / 180) }));
+  PENDULUMS.magnet = {
+    size: 4,
+    magnets: MAGNETS,
+    rhs(p) {
+      const d2 = p.d * p.d;
+      return (y, out) => {
+        let ax = -p.k * y[0] - p.b * y[1];
+        let ay = -p.k * y[2] - p.b * y[3];
+        for (const m of MAGNETS) {
+          const dx = m.x - y[0];
+          const dy = m.y - y[2];
+          const r3 = Math.pow(dx * dx + dy * dy + d2, 1.5);
+          ax += (p.s * dx) / r3;
+          ay += (p.s * dy) / r3;
+        }
+        out[0] = y[1];
+        out[1] = ax;
+        out[2] = y[3];
+        out[3] = ay;
+      };
+    },
+  };
+
   /**
    * Fourth-order Runge-Kutta from y0 for time T with step dt.
    * Keeps every `every`-th step: { t: Float64Array, y: [Float64Array per component] }.
@@ -686,12 +740,286 @@
     const S = PENDULUMS[sys];
     const every = Math.max(1, Math.round(sample / dt));
     const run = integrate(S.rhs(p), y0, dt, T, every);
-    const E0 = S.energy(p, y0);
     const last = run.y.map((a) => a[a.length - 1]);
-    return { ...run, dtSample: dt * every, E0, Eend: S.energy(p, last) };
+    const E0 = S.energy ? S.energy(p, y0) : null;
+    return { ...run, dtSample: dt * every, E0, Eend: S.energy ? S.energy(p, last) : null };
   }
 
-  const Physics = { DEG, solveAtwood, solveChain, buildChain, linkSigns, launch, solveElevator, solveTraction, solveBody, solveTrafficLight, solveWall, labTrial, fitLine, solveHorseCart, solveTug, solveCrash, solveCarAccel, tiltLab, solveTackle, PENDULUMS, integrate, simulatePendulum };
+  /* ---------- More chaos tools ---------- */
+  function logisticOrbit(r, x0, n) {
+    const out = new Float64Array(n + 1);
+    out[0] = x0;
+    for (let i = 1; i <= n; i++) out[i] = r * out[i - 1] * (1 - out[i - 1]);
+    return out;
+  }
+  /** Values the logistic map settles onto (after a transient). */
+  function logisticSettle(r, x0 = 0.2, trans = 1000, keep = 128) {
+    let x = x0;
+    for (let i = 0; i < trans; i++) x = r * x * (1 - x);
+    const out = [];
+    for (let i = 0; i < keep; i++) {
+      x = r * x * (1 - x);
+      out.push(x);
+    }
+    return out;
+  }
+  /** How many distinct values (within tol); a period, or Infinity for none found. */
+  function countCycle(vals, tol = 1e-4) {
+    const uniq = [];
+    for (const v of vals) if (!uniq.some((u) => Math.abs(u - v) < tol)) uniq.push(v);
+    return uniq.length > 32 ? Infinity : uniq.length;
+  }
+
+  /**
+   * Bouncing ball on a plate that moves as A sin(w t).
+   * p = { A (m), f (Hz), e (restitution), g }. Returns flight segments, impacts,
+   * and ballAt(t) for drawing.
+   */
+  function bounceSim(p, T, start = { t: 0, y: 0.002, v: 0 }, maxImpacts = 1e6) {
+    const w = 2 * Math.PI * p.f;
+    const yp = (t) => p.A * Math.sin(w * t);
+    const vp = (t) => p.A * w * Math.cos(w * t);
+    const Gam = (p.A * w * w) / p.g;
+    const segs = [];
+    const impacts = [];
+    let t = start.t;
+    let y = Math.max(start.y, yp(t));
+    let v = start.v;
+    let stuck = false;
+    const h = 1 / (p.f * 60);
+    while (t < T && impacts.length < maxImpacts) {
+      if (stuck) {
+        segs.push({ t0: t, stuck: true });
+        if (Gam <= 1) break; // the plate never accelerates downward faster than g
+        // release where the plate's downward acceleration first exceeds g
+        const ph = Math.asin(1 / Gam);
+        let n = Math.ceil((w * t - ph) / (2 * Math.PI) - 1e-12);
+        let tr = (ph + 2 * Math.PI * n) / w;
+        if (tr <= t + 1e-12) tr += (2 * Math.PI) / w;
+        t = tr;
+        y = yp(t);
+        v = vp(t);
+        stuck = false;
+        continue;
+      }
+      segs.push({ t0: t, y0: y, v0: v, stuck: false });
+      // march forward until the ball is below the plate, then bisect
+      const gap = (tt) => y + v * (tt - t) - 0.5 * p.g * (tt - t) * (tt - t) - yp(tt);
+      let a = t;
+      let b = t + h;
+      let found = false;
+      for (let k = 0; k < 1e6 && a < T + h; k++) {
+        if (gap(b) < 0 && b > t + 1e-9) {
+          found = true;
+          break;
+        }
+        a = b;
+        b += h;
+      }
+      if (!found) break;
+      for (let k = 0; k < 50; k++) {
+        const mid = (a + b) / 2;
+        if (gap(mid) < 0) b = mid;
+        else a = mid;
+      }
+      const ti = b;
+      const vb = v - p.g * (ti - t);
+      const vrel = vb - vp(ti);
+      impacts.push({ t: ti, phase: (w * ti) % (2 * Math.PI), vrel: -vrel, v: vb });
+      t = ti;
+      y = yp(ti);
+      v = vp(ti) - p.e * vrel;
+      if (-vrel * p.e < 1e-4) stuck = true;
+    }
+    const ballAt = (tt) => {
+      let lo = 0;
+      let hi = segs.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (segs[mid].t0 <= tt) lo = mid;
+        else hi = mid - 1;
+      }
+      const sg = segs[lo];
+      if (!sg) return yp(tt);
+      if (sg.stuck) return yp(tt);
+      const tau = tt - sg.t0;
+      return Math.max(yp(tt), sg.y0 + sg.v0 * tau - 0.5 * p.g * tau * tau);
+    };
+    return { segs, impacts, ballAt, plateAt: yp, Gam, end: { t, y, v } };
+  }
+
+  /** Magnitude spectrum of evenly spaced samples (Hann window), one-sided. */
+  function spectrum(vals, dt) {
+    let N = 1;
+    while (N * 2 <= vals.length) N *= 2;
+    const re = new Float64Array(N);
+    const im = new Float64Array(N);
+    let mean = 0;
+    for (let i = 0; i < N; i++) mean += vals[i];
+    mean /= N;
+    for (let i = 0; i < N; i++) re[i] = (vals[i] - mean) * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (N - 1)));
+    // iterative radix-2 FFT
+    for (let i = 1, j = 0; i < N; i++) {
+      let bit = N >> 1;
+      for (; j & bit; bit >>= 1) j ^= bit;
+      j ^= bit;
+      if (i < j) {
+        [re[i], re[j]] = [re[j], re[i]];
+        [im[i], im[j]] = [im[j], im[i]];
+      }
+    }
+    for (let len = 2; len <= N; len <<= 1) {
+      const ang = (-2 * Math.PI) / len;
+      const wr = Math.cos(ang);
+      const wi = Math.sin(ang);
+      for (let i = 0; i < N; i += len) {
+        let cr = 1;
+        let ci = 0;
+        for (let k = 0; k < len / 2; k++) {
+          const ar = re[i + k];
+          const ai = im[i + k];
+          const br = re[i + k + len / 2] * cr - im[i + k + len / 2] * ci;
+          const bi = re[i + k + len / 2] * ci + im[i + k + len / 2] * cr;
+          re[i + k] = ar + br;
+          im[i + k] = ai + bi;
+          re[i + k + len / 2] = ar - br;
+          im[i + k + len / 2] = ai - bi;
+          const ncr = cr * wr - ci * wi;
+          ci = cr * wi + ci * wr;
+          cr = ncr;
+        }
+      }
+    }
+    const half = N / 2;
+    const freq = new Float64Array(half);
+    const mag = new Float64Array(half);
+    for (let k = 0; k < half; k++) {
+      freq[k] = k / (N * dt);
+      mag[k] = Math.hypot(re[k], im[k]) / N;
+    }
+    return { freq, mag };
+  }
+
+  // Single RK4 stepper reused by the long runs below
+  function stepper(f, n) {
+    const k1 = new Float64Array(n);
+    const k2 = new Float64Array(n);
+    const k3 = new Float64Array(n);
+    const k4 = new Float64Array(n);
+    const tmp = new Float64Array(n);
+    return (y, dt) => {
+      f(y, k1);
+      for (let i = 0; i < n; i++) tmp[i] = y[i] + 0.5 * dt * k1[i];
+      f(tmp, k2);
+      for (let i = 0; i < n; i++) tmp[i] = y[i] + 0.5 * dt * k2[i];
+      f(tmp, k3);
+      for (let i = 0; i < n; i++) tmp[i] = y[i] + dt * k3[i];
+      f(tmp, k4);
+      for (let i = 0; i < n; i++) y[i] += (dt / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]);
+    };
+  }
+  const wrapAngle = (a) => {
+    const t = (a + Math.PI) % (2 * Math.PI);
+    return (t < 0 ? t + 2 * Math.PI : t) - Math.PI;
+  };
+
+  /** Double pendulum Poincare section: (theta2, omega2) each time theta1 crosses 0 going up. */
+  function poincareDouble(p, y0, T, dt = 0.002) {
+    const step = stepper(PENDULUMS.double.rhs(p), 4);
+    const y = Float64Array.from(y0);
+    const pts = [];
+    let prev = wrapAngle(y[0]);
+    for (let t = 0; t < T; t += dt) {
+      const before = Float64Array.from(y);
+      step(y, dt);
+      const now = wrapAngle(y[0]);
+      if (prev < 0 && now >= 0 && Math.abs(now - prev) < 1 && y[1] > 0) {
+        const f = -prev / (now - prev);
+        pts.push([wrapAngle(before[2] + f * (y[2] - before[2])), before[3] + f * (y[3] - before[3])]);
+      }
+      prev = now;
+    }
+    return pts;
+  }
+  /** Driven pendulum strobe: (theta, omega) once per drive period after a transient. */
+  function strobeDriven(p, y0, nTrans, nRec, perPeriod = 400) {
+    const w0 = Math.sqrt(p.g / p.L);
+    const Tdrive = (2 * Math.PI) / (p.W * w0);
+    const dt = Tdrive / perPeriod;
+    const step = stepper(PENDULUMS.driven.rhs(p), 3);
+    const y = Float64Array.from(y0);
+    const pts = [];
+    for (let n = 0; n < nTrans + nRec; n++) {
+      for (let k = 0; k < perPeriod; k++) step(y, dt);
+      if (n >= nTrans) pts.push([wrapAngle(y[0]), y[1]]);
+    }
+    return { pts, state: Array.from(y) };
+  }
+  /** Lorenz map: successive maxima of z. */
+  function lorenzMaxima(p, y0, T, dt = 0.002) {
+    const step = stepper(PENDULUMS.lorenz.rhs(p), 3);
+    const y = Float64Array.from(y0);
+    const maxima = [];
+    let z1 = y[2];
+    let z0 = z1;
+    for (let t = 0; t < T; t += dt) {
+      step(y, dt);
+      if (z1 > z0 && z1 >= y[2] && t > 5) maxima.push(z1);
+      z0 = z1;
+      z1 = y[2];
+    }
+    const pts = [];
+    for (let i = 1; i < maxima.length; i++) pts.push([maxima[i - 1], maxima[i]]);
+    return pts;
+  }
+  /** Time until either arm of the double pendulum flips over the top (Infinity if not by Tmax). */
+  function flipTime(p, th1, th2, Tmax, dt = 0.01) {
+    // energy check: too little energy and neither arm can ever flip
+    const E = PENDULUMS.double.energy(p, [th1, 0, th2, 0]);
+    const needLower = -(p.m1 + p.m2) * p.g * p.L1 + p.m2 * p.g * p.L2;
+    const needUpper = (p.m1 + p.m2) * p.g * p.L1 - p.m2 * p.g * p.L2;
+    if (E < Math.min(needLower, needUpper)) return Infinity;
+    const step = stepper(PENDULUMS.double.rhs(p), 4);
+    const y = Float64Array.from([th1, 0, th2, 0]);
+    for (let t = 0; t < Tmax; t += dt) {
+      step(y, dt);
+      if (Math.abs(y[0]) > Math.PI || Math.abs(y[2]) > Math.PI) return t;
+    }
+    return Infinity;
+  }
+  /** Which magnet captures the magnetic pendulum (it stays close to one for 3 s), and when. */
+  function magnetSettle(p, x, y, Tmax = 40, dt = 0.02) {
+    const step = stepper(PENDULUMS.magnet.rhs(p), 4);
+    const s = Float64Array.from([x, 0, y, 0]);
+    let near = -1;
+    let since = 0;
+    for (let t = 0; t < Tmax; t += dt) {
+      step(s, dt);
+      let best = -1;
+      MAGNETS.forEach((m, i) => {
+        if (Math.hypot(m.x - s[0], m.y - s[2]) < 0.35) best = i;
+      });
+      if (best >= 0 && best === near) {
+        if (t - since > 3) return { magnet: best, t: since };
+      } else {
+        near = best;
+        since = t;
+      }
+    }
+    // not captured yet: report the closest magnet
+    let best = 0;
+    let bd = Infinity;
+    MAGNETS.forEach((m, i) => {
+      const d = Math.hypot(m.x - s[0], m.y - s[2]);
+      if (d < bd) {
+        bd = d;
+        best = i;
+      }
+    });
+    return { magnet: best, t: Tmax };
+  }
+
+  const Physics = { DEG, solveAtwood, solveChain, buildChain, linkSigns, launch, solveElevator, solveTraction, solveBody, solveTrafficLight, solveWall, labTrial, fitLine, solveHorseCart, solveTug, solveCrash, solveCarAccel, tiltLab, solveTackle, PENDULUMS, integrate, simulatePendulum, logisticOrbit, logisticSettle, countCycle, bounceSim, spectrum, stepper, wrapAngle, poincareDouble, strobeDriven, lorenzMaxima, flipTime, magnetSettle };
   if (typeof module !== 'undefined' && module.exports) module.exports = Physics;
   else global.Physics = Physics;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -5488,445 +5488,1755 @@
     },
   };
 
-  /* ---------------- Chaos: pendulums and phase portraits ----------------
-   * Each system below is self-contained, so new ones can be added to
-   * CHAOS_SYSTEMS without touching the rest of the tab. A system supplies:
-   *   label, bodies (names), defaults, controls(c, sys), params(c), y0(c),
-   *   presets, positions(p, y) -> bob points, angleIdx/omegaIdx per body.
-   */
-  const CHAOS_T = 60; // seconds of motion computed
-  const TWIN_D = 0.1; // the twin starts this many degrees away
+  /* =====================================================================
+   * Chaos tab
+   * Systems live in CHAOS_SYSTEMS. Each one supplies its own controls,
+   * simulation, scene and list of graphs; the graph types themselves
+   * (phase portrait, separation, spectrum, Poincare section, bifurcation
+   * diagram, fractal map, ...) are shared and drawn by CHAOS_GRAPHS.
+   * ===================================================================== */
+  const TWIN_D = 0.1; // degrees, for the pendulums
   const wrapPi = (a) => {
     const t = (a + Math.PI) % (2 * Math.PI);
     return (t < 0 ? t + 2 * Math.PI : t) - Math.PI;
   };
+  const odeRun = (sys, p, y0, T, dt = 0.001) => P.simulatePendulum(sys, p, y0, T, dt, 0.01);
+  // index of the last sample at or before time t
+  const sampleIndex = (run, t) => Math.max(0, Math.min(Math.floor(t / (run.t[1] - run.t[0]) + 1e-9), run.t.length - 1));
+  function sampleAt(run, t, discrete) {
+    const dt = run.t[1] - run.t[0];
+    const f = Math.min(t / dt, run.t.length - 1);
+    const i = Math.floor(f + 1e-9);
+    if (discrete) return run.y.map((a) => a[i]);
+    const j = Math.min(i + 1, run.t.length - 1);
+    const u = f - i;
+    return run.y.map((a) => a[i] + (a[j] - a[i]) * u);
+  }
+  // angle axis: zoom in when the angle never gets near the top
+  const wrapRange = (arrs) => {
+    let m = 0;
+    for (const a of arrs) for (let i = 0; i < a.length; i++) m = Math.max(m, Math.abs(wrapPi(a[i])));
+    return m < 2.6 ? [-Math.max(0.05, m * 1.15), Math.max(0.05, m * 1.15)] : [-Math.PI, Math.PI];
+  };
+  const rangeOf = (arrs) => {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const a of arrs)
+      for (let i = 0; i < a.length; i++) {
+        if (a[i] < lo) lo = a[i];
+        if (a[i] > hi) hi = a[i];
+      }
+    if (!(hi > lo)) {
+      lo -= 1;
+      hi += 1;
+    }
+    const pad = (hi - lo) * 0.06;
+    return [lo - pad, hi + pad];
+  };
+
+  /* ---------- background jobs for the heavy graphs ---------- */
+  const chaosJobs = {}; // key -> { done, total, data, finished }
+  let chaosTimer = null;
+  let chaosActive = null;
+  function chaosJob(key, total, init, work) {
+    let job = chaosJobs[key];
+    if (!job) job = chaosJobs[key] = { done: 0, total, data: init(), finished: false };
+    if (!job.finished && chaosActive !== key) {
+      clearTimeout(chaosTimer);
+      chaosActive = key;
+      const tick = () => {
+        if (chaosActive !== key) return;
+        if (state.scenario !== 'chaos' || ui.tab !== 'graph') {
+          chaosActive = null;
+          return;
+        }
+        const start = performance.now();
+        while (job.done < job.total && performance.now() - start < 14) {
+          work(job.done, job.data);
+          job.done++;
+        }
+        if (job.done >= job.total) {
+          job.finished = true;
+          chaosActive = null;
+        }
+        if (state.scenario === 'chaos' && ui.tab === 'graph') drawGraph();
+        if (!job.finished) chaosTimer = setTimeout(tick, 0);
+      };
+      chaosTimer = setTimeout(tick, 0);
+    }
+    return job;
+  }
+  const chaosCache = {}; // results of the quick (synchronous) analyses
+  function cached(key, fn) {
+    if (!(key in chaosCache)) chaosCache[key] = fn();
+    return chaosCache[key];
+  }
+
+  /* ---------- shared plotting frame ---------- */
+  function plotFrame(ctx, box, xr, yr, o = {}) {
+    const { x0, y0, w, h } = box;
+    const small = !!o.small;
+    const L = o.L ?? (small ? 48 : 70);
+    const R = 12;
+    const T = small ? 24 : 16;
+    const B = small ? 28 : 42;
+    const X = (v) => x0 + L + ((w - L - R) * (v - xr[0])) / (xr[1] - xr[0]);
+    const Y = o.logY
+      ? (v) => y0 + T + ((h - T - B) * (Math.log10(yr[1]) - Math.log10(Math.max(v, yr[0])))) / (Math.log10(yr[1]) - Math.log10(yr[0]))
+      : (v) => y0 + T + ((h - T - B) * (yr[1] - v)) / (yr[1] - yr[0]);
+    ctx.save();
+    ctx.fillStyle = C.scene;
+    ctx.fillRect(x0, y0, w, h);
+    ctx.strokeStyle = C.grid;
+    ctx.lineWidth = 1;
+    ctx.font = (small ? 11 : 13) + 'px ' + C.fontMono;
+    ctx.fillStyle = C.muted;
+    // x ticks
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    const xt = o.xTicks || (() => {
+      const st = niceStep(xr[1] - xr[0], small ? 4 : 7);
+      const out = [];
+      for (let v = Math.ceil(xr[0] / st) * st; v <= xr[1] + 1e-9; v += st) out.push([v, fmt(v, st < 0.1 ? 2 : st < 1 ? 1 : 0)]);
+      return out;
+    })();
+    xt.forEach(([v, txt]) => {
+      ctx.beginPath();
+      ctx.moveTo(Math.round(X(v)) + 0.5, y0 + T);
+      ctx.lineTo(Math.round(X(v)) + 0.5, y0 + h - B);
+      ctx.stroke();
+      ctx.fillText(txt, X(v), y0 + h - B + 5);
+    });
+    // y ticks
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    if (o.logY) {
+      for (let e = Math.ceil(Math.log10(yr[0])); e <= Math.floor(Math.log10(yr[1])); e++) {
+        const v = Math.pow(10, e);
+        ctx.beginPath();
+        ctx.moveTo(x0 + L, Math.round(Y(v)) + 0.5);
+        ctx.lineTo(x0 + w - R, Math.round(Y(v)) + 0.5);
+        ctx.stroke();
+        ctx.fillText('10' + (e < 0 ? '⁻' : '') + String(Math.abs(e)).split('').map((d) => '⁰¹²³⁴⁵⁶⁷⁸⁹'[+d]).join(''), x0 + L - 6, Y(v));
+      }
+    } else {
+      const yt = o.yTicks || (() => {
+        const st = niceStep(yr[1] - yr[0], small ? 4 : 6);
+        const out = [];
+        for (let v = Math.ceil(yr[0] / st) * st; v <= yr[1] + 1e-9; v += st) out.push([v, fmt(v, st < 0.1 ? 2 : st < 1 ? 1 : 0)]);
+        return out;
+      })();
+      yt.forEach(([v, txt]) => {
+        ctx.beginPath();
+        ctx.moveTo(x0 + L, Math.round(Y(v)) + 0.5);
+        ctx.lineTo(x0 + w - R, Math.round(Y(v)) + 0.5);
+        ctx.stroke();
+        ctx.fillText(txt, x0 + L - 6, Y(v));
+      });
+    }
+    ctx.strokeStyle = C.muted;
+    ctx.beginPath();
+    ctx.moveTo(x0 + L, y0 + T);
+    ctx.lineTo(x0 + L, y0 + h - B);
+    ctx.lineTo(x0 + w - R, y0 + h - B);
+    ctx.stroke();
+    ctx.fillStyle = C.ink;
+    ctx.font = '600 ' + (small ? 12 : 14) + 'px ' + C.fontBody;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    if (o.xLabel) ctx.fillText(o.xLabel, x0 + L + (w - L - R) / 2, y0 + h - 2);
+    if (o.yLabel) {
+      ctx.save();
+      ctx.translate(x0 + (small ? 10 : 14), y0 + T + (h - T - B) / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.textBaseline = 'middle';
+      ctx.fillText(o.yLabel, 0, 0);
+      ctx.restore();
+    }
+    if (o.title) {
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText(o.title, x0 + 8, y0 + 5);
+    }
+    ctx.restore();
+    const clip = () => {
+      ctx.beginPath();
+      ctx.rect(x0 + L, y0 + T, w - L - R, h - T - B);
+      ctx.clip();
+    };
+    return { X, Y, clip, inner: { x: x0 + L, y: y0 + T, w: w - L - R, h: h - T - B } };
+  }
+  // a polyline through (xs[i], ys[i]) for i <= n; breaks where an angle wraps
+  function pathLine(ctx, fr, xs, ys, n, color, width, alpha, wrapX, wrapY) {
+    ctx.save();
+    fr.clip();
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = alpha;
+    ctx.lineWidth = width;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    let px = null;
+    let py = null;
+    for (let i = 0; i <= n; i++) {
+      const xv = wrapX ? wrapPi(xs[i]) : xs[i];
+      const yv = wrapY ? wrapPi(ys[i]) : ys[i];
+      const jump = (wrapX && px !== null && Math.abs(xv - px) > Math.PI) || (wrapY && py !== null && Math.abs(yv - py) > Math.PI);
+      if (px === null || jump) ctx.moveTo(fr.X(xv), fr.Y(yv));
+      else ctx.lineTo(fr.X(xv), fr.Y(yv));
+      px = xv;
+      py = yv;
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+  function dotAt(ctx, x, y, color, r = 5) {
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.strokeStyle = C.scene;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+  const PI_TICKS = [[-Math.PI, '−π'], [-Math.PI / 2, '−π/2'], [0, '0'], [Math.PI / 2, 'π/2'], [Math.PI, 'π']];
+  function progressNote(ctx, box, job, what) {
+    if (job.finished) return;
+    labelText(ctx, 'Computing the ' + what + '… ' + Math.round((100 * job.done) / job.total) + '%', box.x0 + box.w - 14, box.y0 + 14, C.accent, 'right', 14, 700, C.fontBody);
+  }
+
+  /* ---------- the shared graph types ---------- */
+  const CHAOS_GRAPHS = {
+    // theta vs omega (or any two variables) up to the current time
+    portrait(ctx, an, g, box, tNow, small) {
+      const [xi, yi] = g.pair;
+      const runs = an.twinOn ? [an.run, an.twin] : [an.run];
+      const xr = g.fixed ? g.fixed[0] : g.wrapX ? wrapRange(runs.map((r) => r.y[xi])) : rangeOf(runs.map((r) => r.y[xi]));
+      const yr = g.fixed ? g.fixed[1] : rangeOf(runs.map((r) => r.y[yi]));
+      const fr = plotFrame(ctx, box, xr, yr, { small, xLabel: g.xLabel, yLabel: g.yLabel, title: small ? g.title || g.label : '', xTicks: g.wrapX && xr[1] >= Math.PI - 1e-9 ? PI_TICKS : null });
+      const n = idxAt(an, tNow);
+      if (an.twinOn) pathLine(ctx, fr, an.twin.y[xi], an.twin.y[yi], n, C.l2, 1.2, 0.6, g.wrapX, false);
+      pathLine(ctx, fr, an.run.y[xi], an.run.y[yi], n, C.accent, small ? 1.4 : 1.8, 0.95, g.wrapX, false);
+      if (an.twinOn) dotAt(ctx, fr.X(g.wrapX ? wrapPi(an.twin.y[xi][n]) : an.twin.y[xi][n]), fr.Y(an.twin.y[yi][n]), C.l2, 4);
+      dotAt(ctx, fr.X(g.wrapX ? wrapPi(an.run.y[xi][n]) : an.run.y[xi][n]), fr.Y(an.run.y[yi][n]), C.accent);
+      if (g.strobe) {
+        // Poincare points so far: one per drive period
+        const S = CHAOS_SYSTEMS[an.sys];
+        const pts = S.strobeSoFar(an, tNow);
+        ctx.save();
+        fr.clip();
+        ctx.fillStyle = C['f-f'];
+        pts.forEach(([a, b]) => {
+          ctx.beginPath();
+          ctx.arc(fr.X(a), fr.Y(b), 3.5, 0, 2 * Math.PI);
+          ctx.fill();
+        });
+        ctx.restore();
+      }
+    },
+    // variables against time
+    time(ctx, an, g, box, tNow, small) {
+      const dtS = an.run.t[1] - an.run.t[0];
+      const tEnd = an.run.t[an.run.t.length - 1];
+      const tr = tRun(an, tNow);
+      const t0 = g.window ? Math.max(0, tr - g.window) : 0;
+      const t1 = g.window ? Math.max(g.window, tr) : tEnd;
+      const all = [];
+      g.series.forEach((sr) => {
+        all.push(an.run.y[sr.idx]);
+        if (an.twinOn && sr.twin !== false) all.push(an.twin.y[sr.idx]);
+      });
+      const yr = g.wrap ? [-Math.PI, Math.PI] : g.yRange ? g.yRange(an) : rangeOf(all);
+      const fr = plotFrame(ctx, box, [t0, t1], yr, { small, xLabel: g.xLabel || 'time t (s)', yLabel: g.yLabel, title: small ? g.title || g.label : '', yTicks: g.wrap ? PI_TICKS : null });
+      const n = idxAt(an, tNow);
+      const i0 = Math.max(0, Math.floor(t0 / dtS));
+      const tt = an.run.t;
+      const plot = (run, idx, color, alpha, width, dots) => {
+        ctx.save();
+        fr.clip();
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.globalAlpha = alpha;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        let prev = null;
+        for (let i = i0; i <= n; i++) {
+          const v = g.wrap ? wrapPi(run.y[idx][i]) : run.y[idx][i];
+          if (prev === null || (g.wrap && Math.abs(v - prev) > Math.PI)) ctx.moveTo(fr.X(tt[i]), fr.Y(v));
+          else ctx.lineTo(fr.X(tt[i]), fr.Y(v));
+          if (dots) ctx.fillRect(fr.X(tt[i]) - 2, fr.Y(v) - 2, 4, 4);
+          prev = v;
+        }
+        ctx.stroke();
+        ctx.restore();
+      };
+      g.series.forEach((sr) => {
+        if (an.twinOn && sr.twin !== false) plot(an.twin, sr.idx, C.l2, 0.55, 1.2, g.dots);
+        plot(an.run, sr.idx, sr.color ? C[sr.color] : C.accent, 0.95, small ? 1.4 : 1.8, g.dots);
+      });
+      if (!small) {
+        let lx = fr.inner.x + 8;
+        g.series.forEach((sr) => {
+          labelText(ctx, sr.label, lx, fr.inner.y + 10, sr.color ? C[sr.color] : C.accent, 'left', 13, 600, C.fontBody);
+          lx += 150;
+        });
+        if (an.twinOn) labelText(ctx, 'pink: the twin', lx, fr.inner.y + 10, C.l2, 'left', 13, 600, C.fontBody);
+      }
+    },
+    // distance between the run and its twin, on a log scale, with the Lyapunov exponent
+    separation(ctx, an, g, box, tNow) {
+      const sep = an.sep;
+      const tt = an.run.t;
+      const n = idxAt(an, tNow);
+      let lo = Infinity;
+      let hi = 0;
+      for (let i = 0; i < sep.length; i++) {
+        if (sep[i] > 0) lo = Math.min(lo, sep[i]);
+        hi = Math.max(hi, sep[i]);
+      }
+      lo = Math.pow(10, Math.floor(Math.log10(Math.max(lo, 1e-14))));
+      hi = Math.pow(10, Math.ceil(Math.log10(Math.max(hi, lo * 100))));
+      const fr = plotFrame(ctx, box, [0, tt[tt.length - 1]], [lo, hi], { logY: true, xLabel: g.xLabel || 'time t (s)', yLabel: 'separation from the twin' + (an.sepUnit ? ' (' + an.sepUnit + ')' : '') });
+      ctx.save();
+      fr.clip();
+      ctx.strokeStyle = C.accent;
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      for (let i = 0; i <= n; i++) {
+        const v = Math.max(sep[i], lo);
+        i ? ctx.lineTo(fr.X(tt[i]), fr.Y(v)) : ctx.moveTo(fr.X(tt[i]), fr.Y(v));
+      }
+      ctx.stroke();
+      ctx.restore();
+      const lam = an.lyap;
+      const trNow = tRun(an, tNow);
+      if (lam && lam.ok && trNow >= lam.t2) {
+        const A = (t) => Math.exp(lam.b + lam.slope * t);
+        ctx.save();
+        fr.clip();
+        ctx.strokeStyle = C['f-a'];
+        ctx.setLineDash([6, 5]);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(fr.X(lam.t1), fr.Y(A(lam.t1)));
+        ctx.lineTo(fr.X(lam.t2), fr.Y(A(lam.t2)));
+        ctx.stroke();
+        ctx.restore();
+      }
+      const msg = !lam || !lam.ok
+        ? 'No steady exponential growth: the gap stays small or grows slowly (regular motion).'
+        : trNow < lam.t2
+          ? 'Press Play (or let it run) to see the growth.'
+          : 'Straight-line growth on this log scale means exponential separation: Lyapunov exponent λ ≈ ' + fmt(lam.slope, 2) + ' per ' + an.sepTimeUnit + '.';
+      labelText(ctx, msg, fr.inner.x + 8, fr.inner.y + 12, lam && lam.ok ? C['f-a'] : C.muted, 'left', 14, 600, C.fontBody);
+    },
+    // frequency content
+    spectrum(ctx, an, g, box) {
+      const S = CHAOS_SYSTEMS[an.sys];
+      const sp = cached('spec:' + an.key, () => {
+        const src = S.spectrumSeries(an);
+        return { ...P.spectrum(src.vals, src.dt), unit: src.unit, what: src.what };
+      });
+      const fmaxShow = g.fmax ? g.fmax(an) : sp.freq[sp.freq.length - 1];
+      let k1 = 1;
+      while (k1 < sp.freq.length - 1 && sp.freq[k1] < fmaxShow) k1++;
+      let peak = 1e-12;
+      for (let k = 1; k <= k1; k++) peak = Math.max(peak, sp.mag[k]);
+      const fr = plotFrame(ctx, box, [0, sp.freq[k1]], [peak * 1e-5, peak * 2], { logY: true, xLabel: 'frequency (' + sp.unit + ')', yLabel: 'strength (log scale)' });
+      ctx.save();
+      fr.clip();
+      ctx.strokeStyle = C.accent;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      for (let k = 1; k <= k1; k++) {
+        const v = Math.max(sp.mag[k], peak * 1e-5);
+        k > 1 ? ctx.lineTo(fr.X(sp.freq[k]), fr.Y(v)) : ctx.moveTo(fr.X(sp.freq[k]), fr.Y(v));
+      }
+      ctx.stroke();
+      ctx.restore();
+      labelText(ctx, 'Spectrum of ' + sp.what + '. Sharp peaks: regular motion. A broad, noisy spread: chaos.', fr.inner.x + 8, fr.inner.y + 12, C.muted, 'left', 13, 600, C.fontBody);
+    },
+    // total energy against time (conserved)
+    energy(ctx, an, g, box, tNow) {
+      const S = P.PENDULUMS[an.sys];
+      const n = idxAt(an, tNow);
+      const tt = an.run.t;
+      const E = cached('E:' + an.key, () => {
+        const out = new Float64Array(tt.length);
+        for (let i = 0; i < tt.length; i++) out[i] = S.energy(an.p, an.run.y.map((a) => a[i]));
+        return out;
+      });
+      const E0 = E[0];
+      let lo = E0;
+      let hi = E0;
+      for (let i = 0; i < E.length; i++) {
+        lo = Math.min(lo, E[i]);
+        hi = Math.max(hi, E[i]);
+      }
+      const span = Math.max(Math.abs(E0) * 0.2, 1, (hi - lo) * 0.6);
+      const fr = plotFrame(ctx, box, [0, tt[tt.length - 1]], [Math.min(lo, E0) - span * 0.3, Math.max(hi, E0) + span * 0.7], { xLabel: 'time t (s)', yLabel: an.sys === 'single' ? 'energy per kg (J/kg)' : 'total energy (J)' });
+      ctx.save();
+      fr.clip();
+      ctx.strokeStyle = C['f-n'];
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      for (let i = 0; i <= n; i++) i ? ctx.lineTo(fr.X(tt[i]), fr.Y(E[i])) : ctx.moveTo(fr.X(tt[i]), fr.Y(E[i]));
+      ctx.stroke();
+      ctx.restore();
+      let drift = 0;
+      for (let i = 0; i <= n; i++) drift = Math.max(drift, Math.abs(E[i] - E[0]));
+      const damped = an.sys === 'single' && an.p.b > 0;
+      labelText(ctx, damped ? 'Damping (air resistance) drains the energy away, so the swing dies down.' : 'Energy stays constant (largest change so far: ' + (drift / Math.max(1e-12, Math.abs(E[0]))).toExponential(1) + ' of the total), even when the motion is chaotic.', fr.inner.x + 8, fr.inner.y + 12, C.muted, 'left', 13, 600, C.fontBody);
+    },
+    // Poincare section: a scatter of points, computed once
+    poincare(ctx, an, g, box) {
+      const S = CHAOS_SYSTEMS[an.sys];
+      const sec = cached('poin:' + an.key, () => S.poincare(an));
+      const xr = sec.xRange || rangeOf([sec.pts.map((q) => q[0])]);
+      const yr = sec.yRange || rangeOf([sec.pts.map((q) => q[1])]);
+      const fr = plotFrame(ctx, box, xr, yr, { xLabel: sec.xLabel, yLabel: sec.yLabel, xTicks: sec.xTicks || null });
+      ctx.save();
+      fr.clip();
+      ctx.fillStyle = C.accent;
+      sec.pts.forEach(([a, b]) => ctx.fillRect(fr.X(a) - 1.5, fr.Y(b) - 1.5, 3, 3));
+      ctx.restore();
+      labelText(ctx, sec.pts.length + ' points. ' + sec.note, fr.inner.x + 8, fr.inner.y + 12, C.muted, 'left', 13, 600, C.fontBody);
+    },
+    // bifurcation diagram: computed column by column in the background
+    bifurcation(ctx, an, g, box) {
+      const S = CHAOS_SYSTEMS[an.sys];
+      const bf = S.bif;
+      const key = 'bif:' + an.sys + ':' + JSON.stringify(bf.keyOf(an));
+      const job = chaosJob(key, bf.cols, () => ({ cols: [], carry: null }), (i, data) => {
+        const v = bf.from + ((bf.to - bf.from) * i) / (bf.cols - 1);
+        const out = bf.column(an, v, data.carry);
+        data.cols.push([v, out.ys]);
+        data.carry = out.carry;
+      });
+      const yr = bf.yRange || (job.data.cols.length ? rangeOf(job.data.cols.map((c2) => c2[1])) : [0, 1]);
+      const fr = plotFrame(ctx, box, [bf.from, bf.to], yr, { xLabel: bf.xLabel, yLabel: bf.yLabel });
+      ctx.save();
+      fr.clip();
+      ctx.fillStyle = C.accent;
+      ctx.globalAlpha = 0.75;
+      job.data.cols.forEach(([v, ys]) => ys.forEach((y) => ctx.fillRect(fr.X(v) - 0.8, fr.Y(y) - 0.8, 1.6, 1.6)));
+      ctx.globalAlpha = 1;
+      // the current setting
+      const cv = bf.current(an);
+      ctx.strokeStyle = C['f-a'];
+      ctx.setLineDash([5, 4]);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(fr.X(cv), fr.inner.y);
+      ctx.lineTo(fr.X(cv), fr.inner.y + fr.inner.h);
+      ctx.stroke();
+      ctx.restore();
+      labelText(ctx, 'Dashed line: your current setting. Click anywhere on the graph to use that value.', fr.inner.x + 8, fr.inner.y + 12, C.muted, 'left', 13, 600, C.fontBody);
+      progressNote(ctx, box, job, 'diagram');
+      ui.chaosClick = (px) => {
+        if (px < fr.inner.x || px > fr.inner.x + fr.inner.w) return;
+        const v = bf.from + ((px - fr.inner.x) / fr.inner.w) * (bf.to - bf.from);
+        bf.set(cur(), v);
+      };
+    },
+    // a fractal map over a grid of starting conditions, computed in the background
+    map(ctx, an, g, box) {
+      const S = CHAOS_SYSTEMS[an.sys];
+      const mp = S.map;
+      const n = mp.n;
+      const key = 'map:' + an.sys + ':' + JSON.stringify(mp.keyOf(an));
+      const job = chaosJob(key, n * n, () => ({ img: new Uint8ClampedArray(n * n * 4) }), (k, data) => {
+        const ix = k % n;
+        const iy = Math.floor(k / n);
+        const x = mp.xr[0] + ((ix + 0.5) / n) * (mp.xr[1] - mp.xr[0]);
+        const y = mp.yr[1] - ((iy + 0.5) / n) * (mp.yr[1] - mp.yr[0]);
+        const [r, gg, b] = mp.color(an, mp.cell(an, x, y));
+        const o = 4 * k;
+        data.img[o] = r;
+        data.img[o + 1] = gg;
+        data.img[o + 2] = b;
+        data.img[o + 3] = 255;
+      });
+      // keep the map square
+      const side = Math.max(60, Math.min(box.w - 82, box.h - 58));
+      const sq = { x0: box.x0 + (box.w - side - 82) / 2, y0: box.y0, w: side + 82, h: side + 58 };
+      const fr = plotFrame(ctx, sq, mp.xr, mp.yr, { xLabel: mp.xLabel, yLabel: mp.yLabel, xTicks: mp.ticks || null, yTicks: mp.ticks || null });
+      if (!job.data.off) {
+        job.data.off = document.createElement('canvas');
+        job.data.off.width = n;
+        job.data.off.height = n;
+      }
+      const off = job.data.off;
+      if (job.data.shown !== job.done) {
+        off.getContext('2d').putImageData(new ImageData(job.data.img, n, n), 0, 0);
+        job.data.shown = job.done;
+      }
+      ctx.save();
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(off, fr.inner.x, fr.inner.y, fr.inner.w, fr.inner.h);
+      // the current start
+      const st = mp.current(an);
+      dotAt(ctx, fr.X(st[0]), fr.Y(st[1]), '#ffffff', 6);
+      ctx.restore();
+      progressNote(ctx, box, job, 'map');
+      ui.chaosClick = (px, py) => {
+        if (px < fr.inner.x || px > fr.inner.x + fr.inner.w || py < fr.inner.y || py > fr.inner.y + fr.inner.h) return;
+        const x = mp.xr[0] + ((px - fr.inner.x) / fr.inner.w) * (mp.xr[1] - mp.xr[0]);
+        const y = mp.yr[1] - ((py - fr.inner.y) / fr.inner.h) * (mp.yr[1] - mp.yr[0]);
+        mp.set(cur(), x, y);
+      };
+    },
+    // the logistic map's cobweb diagram
+    cobweb(ctx, an, g, box, tNow, small) {
+      const r = an.p.r;
+      const fr = plotFrame(ctx, box, [0, 1], [0, 1], { small, xLabel: 'xₙ', yLabel: 'xₙ₊₁', title: small ? 'Cobweb diagram' : '' });
+      ctx.save();
+      fr.clip();
+      ctx.strokeStyle = C.muted;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(fr.X(0), fr.Y(0));
+      ctx.lineTo(fr.X(1), fr.Y(1));
+      ctx.stroke();
+      ctx.strokeStyle = C['f-n'];
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i <= 100; i++) {
+        const x = i / 100;
+        i ? ctx.lineTo(fr.X(x), fr.Y(r * x * (1 - x))) : ctx.moveTo(fr.X(x), fr.Y(0));
+      }
+      ctx.stroke();
+      const n = idxAt(an, tNow);
+      // the whole web faintly, the latest 8 steps brightly
+      const web = (run, color, alpha) => {
+        const xs = run.y[0];
+        ctx.strokeStyle = color;
+        const seg = (from, to, a, wdt) => {
+          ctx.globalAlpha = a;
+          ctx.lineWidth = wdt;
+          ctx.beginPath();
+          ctx.moveTo(fr.X(xs[from]), fr.Y(from ? xs[from] : 0));
+          for (let i = from; i < to; i++) {
+            ctx.lineTo(fr.X(xs[i]), fr.Y(xs[i + 1]));
+            ctx.lineTo(fr.X(xs[i + 1]), fr.Y(xs[i + 1]));
+          }
+          ctx.stroke();
+        };
+        seg(0, n, alpha * 0.35, 1);
+        seg(Math.max(0, n - 8), n, alpha, 1.8);
+        ctx.globalAlpha = 1;
+      };
+      if (an.twinOn) web(an.twin, C.l2, 0.5);
+      web(an.run, C.accent, 0.9);
+      ctx.restore();
+      dotAt(ctx, fr.X(an.run.y[0][n]), fr.Y(an.run.y[0][n]), C.accent);
+    },
+  };
+
+  /* ---------- Lyapunov fit on the separation curve ----------
+   * The separation wobbles, so fit its running maximum (over `win`) on a log
+   * scale, from the start until it reaches a tenth of its largest value.
+   * Exponential growth fits ln(sep) vs t better than a straight line in sep. */
+  function fitLyapunov(t, sep, win) {
+    const n = sep.length;
+    const dt = t[1] - t[0];
+    const w = Math.max(1, Math.round(win / dt));
+    const env = new Float64Array(n);
+    const dq = []; // indices with decreasing values (sliding-window maximum)
+    for (let i = 0; i < n; i++) {
+      while (dq.length && sep[dq[dq.length - 1]] <= sep[i]) dq.pop();
+      dq.push(i);
+      if (dq[0] < i - w) dq.shift();
+      env[i] = sep[dq[0]];
+    }
+    const s0 = Math.max(sep[0], 1e-14);
+    let sat = 0;
+    for (let i = 0; i < n; i++) sat = Math.max(sat, sep[i]);
+    if (sat < 100 * s0) return { ok: false };
+    let i2 = -1;
+    for (let i = 0; i < n; i++)
+      if (env[i] > 0.1 * sat) {
+        i2 = i;
+        break;
+      }
+    const i1 = Math.min(w, Math.floor(i2 / 4));
+    const step = Math.max(1, Math.floor((i2 - i1) / 200));
+    const pe = [];
+    const pl = [];
+    for (let i = i1; i <= i2; i += step) {
+      pe.push([t[i], Math.log(Math.max(env[i], 1e-300))]);
+      pl.push([t[i], env[i]]);
+    }
+    if (pe.length < 6) return { ok: false };
+    const r2 = (pts) => {
+      const f = P.fitLine(pts);
+      const m = pts.reduce((a, q) => a + q[1], 0) / pts.length;
+      let ss = 0;
+      let sr = 0;
+      pts.forEach(([x, y]) => {
+        ss += (y - m) * (y - m);
+        sr += (y - (f.slope * x + f.intercept)) * (y - (f.slope * x + f.intercept));
+      });
+      return { ...f, r2: ss > 0 ? 1 - sr / ss : 0 };
+    };
+    const e = r2(pe);
+    const l = r2(pl);
+    if (!(e.slope > 0) || e.r2 < 0.5 || e.r2 <= l.r2) return { ok: false };
+    return { ok: true, slope: e.slope, b: e.intercept, t1: t[i1], t2: t[i2] };
+  }
+  /* ---------- the systems ---------- */
+  const G_ = () => state.g;
+  const angDist = (run, twin, i, idx) => {
+    let s = 0;
+    idx.forEach((k) => {
+      const d = wrapPi(run.y[k][i] - twin.y[k][i]);
+      s += d * d;
+    });
+    return Math.sqrt(s);
+  };
+  // run an ODE system and its twin, and the distance between them
+  function odeSimulate(an, S) {
+    const y0 = S.y0(an.s);
+    an.y0 = y0;
+    an.run = P.simulatePendulum(S.ode, an.p, y0, S.T, S.dt, S.sample);
+    an.twin = P.simulatePendulum(S.ode, an.p, S.nudge(y0), S.T, S.dt, S.sample);
+    const n = an.run.t.length;
+    an.sep = new Float64Array(n);
+    for (let i = 0; i < n; i++) an.sep[i] = S.sepOf(an.run, an.twin, i);
+  }
+  // pendulum drawing shared by the single, double and driven pendulums
+  function drawRigScene(ctx, an, box, t, S, extra) {
+    const reach = S.reach(an.p);
+    const cx = box.x0 + box.w / 2;
+    const cy = box.y0 + box.h / 2 + 6;
+    const k = (Math.min(box.w, box.h) / 2 - 22) / reach;
+    const P2 = (x, y) => [cx + x * k, cy - y * k];
+    ctx.save();
+    ctx.strokeStyle = C.grid;
+    ctx.setLineDash([4, 6]);
+    ctx.beginPath();
+    ctx.arc(cx, cy, reach * k, 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.restore();
+    const n = idxAt(an, t);
+    if (an.trail) {
+      const from = Math.max(0, n - Math.round(4 / (an.run.t[1] - an.run.t[0])));
+      ctx.save();
+      ctx.lineWidth = 1.6;
+      ctx.strokeStyle = C.accent;
+      for (let i = from + 1; i <= n; i++) {
+        const a = S.positions(an.p, an.run.y.map((arr) => arr[i - 1]));
+        const b = S.positions(an.p, an.run.y.map((arr) => arr[i]));
+        const pa = P2(a[a.length - 1].x, a[a.length - 1].y);
+        const pb = P2(b[b.length - 1].x, b[b.length - 1].y);
+        ctx.globalAlpha = 0.1 + 0.6 * ((i - from) / Math.max(1, n - from));
+        ctx.beginPath();
+        ctx.moveTo(pa[0], pa[1]);
+        ctx.lineTo(pb[0], pb[1]);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    const rig = (y, faint) => {
+      const pts = S.positions(an.p, y);
+      ctx.save();
+      if (faint) ctx.globalAlpha = 0.55;
+      ctx.strokeStyle = faint ? C.l2 : C.ink;
+      ctx.lineWidth = faint ? 2 : 3;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      pts.forEach((q) => ctx.lineTo(...P2(q.x, q.y)));
+      ctx.stroke();
+      pts.forEach((q, i) => {
+        const [px, py] = P2(q.x, q.y);
+        const mass = an.sys === 'double' ? (i ? an.p.m2 : an.p.m1) : 1;
+        ctx.fillStyle = faint ? C.l2 : bodyColor(i);
+        ctx.strokeStyle = faint ? C.l2 : C.ink;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(px, py, Math.max(7, Math.min(20, 9 * Math.cbrt(mass))), 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.stroke();
+      });
+      ctx.restore();
+    };
+    if (an.twinOn) rig(sampleAt(an.twin, tRun(an, t)), true);
+    rig(sampleAt(an.run, tRun(an, t)), false);
+    ctx.save();
+    ctx.fillStyle = C['bench-edge'];
+    ctx.fillRect(cx - 30, cy - 10, 60, 6);
+    ctx.fillStyle = C.ink;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 4, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.restore();
+    if (extra) extra(cx, cy, k);
+    sceneTitle(ctx, an, box);
+  }
+  function sceneTitle(ctx, an, box) {
+    const S = CHAOS_SYSTEMS[an.sys];
+    labelText(ctx, S.label, box.x0 + 12, box.y0 + 18, C.ink, 'left', 15, 700, C.fontBody);
+    if (an.twinOn) labelText(ctx, 'Pink: ' + S.twinText, box.x0 + 12, box.y0 + 40, C.l2, 'left', 13, 600, C.fontBody);
+  }
+  // animation time -> the run's own time (steps for the logistic map)
+  const tRun = (an, t) => Math.min(t * (an.rate || 1), an.run.t[an.run.t.length - 1]);
+  const idxAt = (an, t) => sampleIndex(an.run, tRun(an, t));
+
+  const MAP_FLIP = [[0, [253, 231, 37]], [0.25, [94, 201, 98]], [0.5, [33, 145, 140]], [0.75, [59, 82, 139]], [1, [68, 1, 84]]];
+  function rampColor(stops, u) {
+    u = Math.max(0, Math.min(1, u));
+    for (let i = 1; i < stops.length; i++)
+      if (u <= stops[i][0]) {
+        const [a, ca] = stops[i - 1];
+        const [b, cb] = stops[i];
+        const f = (u - a) / (b - a);
+        return ca.map((v, j) => Math.round(v + (cb[j] - v) * f));
+      }
+    return stops[stops.length - 1][1];
+  }
+  const FLIP_T = 20;
+  const rgb = (c) => 'rgb(' + c.join(',') + ')';
+  const MAGNET_RGB = [[240, 120, 40], [60, 150, 240], [70, 190, 90]];
+  const MAGNET_NAMES = ['orange', 'blue', 'green'];
+  const MAGNET_POS = P.PENDULUMS.magnet.magnets;
+
+  // bouncing ball: start on the steady one-bounce-per-shake orbit when it exists
+  function bounceStart(p) {
+    const w = 2 * Math.PI * p.f;
+    const u = (p.g / p.f) / 2;
+    const vp = (u * (1 - p.e)) / (1 + p.e);
+    const c = vp / (p.A * w);
+    if (!(c <= 1)) return { t: 0, y: 0.002, v: 0 };
+    const ph = -Math.acos(c);
+    return { t: (ph + 2 * Math.PI) / w, y: p.A * Math.sin(ph), v: u };
+  }
+  // sample a bounceSim result: ball height, plate height and ball velocity
+  function sampleBounce(r, p, T, dt) {
+    const n = Math.floor(T / dt) + 1;
+    const t = new Float64Array(n);
+    const yb = new Float64Array(n);
+    const yp = new Float64Array(n);
+    const vb = new Float64Array(n);
+    const w = 2 * Math.PI * p.f;
+    let k = 0;
+    for (let i = 0; i < n; i++) {
+      const tt = i * dt;
+      while (k + 1 < r.segs.length && r.segs[k + 1].t0 <= tt) k++;
+      const sg = r.segs[k];
+      t[i] = tt;
+      yp[i] = r.plateAt(tt) * 1000;
+      if (!sg || sg.stuck || tt < sg.t0) {
+        yb[i] = yp[i];
+        vb[i] = p.A * w * Math.cos(w * tt);
+      } else {
+        const tau = tt - sg.t0;
+        yb[i] = Math.max(yp[i], (sg.y0 + sg.v0 * tau - 0.5 * p.g * tau * tau) * 1000);
+        vb[i] = sg.v0 - p.g * tau;
+      }
+    }
+    return { t, y: [yb, yp, vb] };
+  }
+
   const CHAOS_SYSTEMS = {
     single: {
       label: 'Single pendulum',
+      blurb: 'One bob on a rod. Its motion is always regular: try any starting angle.',
       bodies: ['Bob'],
-      angleIdx: [0],
-      omegaIdx: [1],
-      defaults: () => ({ L: 1, th: 60, w: 0, b: 0 }),
-      presets: { small: { th: 15, w: 0 }, big: { th: 170, w: 0 } },
-      params: (c) => ({ g: state.g, L: c.single.L, b: c.single.b }),
-      y0: (c) => [c.single.th * DEG, c.single.w],
+      ode: 'single',
+      T: 60,
+      dt: 0.001,
+      sample: 0.01,
+      twinText: 'a twin started ' + TWIN_D + '° away',
+      fields: [
+        ['L', 'Length L', 'm', 1, 0.1, 5, 0.1],
+        ['th', 'Starting angle θ₀', '°', 60, -179, 179, 1],
+        ['w', 'Starting angular velocity ω₀', 'rad/s', 0, -20, 20, 0.1],
+        ['b', 'Damping (air resistance)', '1/s', 0, 0, 2, 0.05],
+      ],
+      note: 'Angles are measured from straight down; positive is counterclockwise. The bob’s mass doesn’t change the motion.',
+      presets: [['small', 'Small swings', { th: 15, w: 0 }], ['big', 'Big swings', { th: 170, w: 0 }], ['over', 'Over the top', { th: 0, w: 8 }]],
+      params: (s) => ({ g: G_(), L: s.L, b: s.b }),
+      y0: (s) => [s.th * DEG, s.w],
       nudge: (y) => [y[0] + TWIN_D * DEG, y[1]],
+      sepOf: (a, b, i) => angDist(a, b, i, [0]),
+      sepUnit: 'rad',
       positions: (p, y) => [{ x: p.L * Math.sin(y[0]), y: -p.L * Math.cos(y[0]) }],
       reach: (p) => p.L,
-      controls(c) {
-        const s = c.single;
-        return numField('Length L', 'single.L', s.L, 'm', { min: 0.1, max: 5, step: 0.1 }) +
-          numField('Starting angle θ₀', 'single.th', s.th, '°', { min: -179, max: 179, step: 1 }) +
-          numField('Starting angular velocity ω₀', 'single.w', s.w, 'rad/s', { min: -20, max: 20, step: 0.1 }) +
-          numField('Damping (air resistance)', 'single.b', s.b, '1/s', { min: 0, max: 2, step: 0.05 }) +
-          '<p class="note">Angles are measured from straight down; positive is counterclockwise. The bob’s mass doesn’t change the motion.</p>';
+      scene(ctx, an, box, t) {
+        drawRigScene(ctx, an, box, t, this);
+      },
+      live: () => ({ type: 'portrait', pair: [0, 1], wrapX: true, xLabel: 'angle θ (rad)', yLabel: 'ω (rad/s)', title: 'Phase portrait' }),
+      graphs: () => [
+        { id: 'portrait', type: 'portrait', label: 'Phase portrait (θ vs ω)', pair: [0, 1], wrapX: true, xLabel: 'angle θ (rad)', yLabel: 'angular velocity ω (rad/s)', hint: 'Each point is the angle and angular velocity at one instant. A closed loop that repeats means regular motion.' },
+        { id: 'time', type: 'time', label: 'Angle–time', series: [{ idx: 0, label: 'θ' }], wrap: true, yLabel: 'angle θ (rad)', hint: 'The angle against time. Regular motion repeats with a steady period.' },
+        { id: 'sep', type: 'separation', label: 'Separation from the twin (log scale)', hint: 'How far apart the pendulum and its twin are. Without chaos the gap grows slowly, if at all.' },
+        { id: 'spec', type: 'spectrum', label: 'Frequency spectrum', fmax: () => 4, hint: 'Which frequencies the swinging contains. A single pendulum gives one sharp peak (plus harmonics for big swings).' },
+        { id: 'energy', type: 'energy', label: 'Energy–time', hint: 'Total mechanical energy per kilogram: kinetic plus gravitational.' },
+      ],
+      spectrumSeries: (an) => ({ vals: an.run.y[1], dt: an.run.t[1], unit: 'Hz', what: 'the angular velocity ω' }),
+      readouts: (an, y) => [{ label: 'Angle θ', value: fmt(wrapPi(y[0]) / DEG, 1) + '°' }, { label: 'Angular velocity ω', value: fmt(y[1]) + ' rad/s' }],
+      mcq: () => [{
+        key: 'chaos1',
+        q: 'Looking at its phase portrait, is the single pendulum’s motion chaotic?',
+        options: ['No: the path repeats the same closed loop (or spirals in steadily with damping)', 'Yes: the path never repeats'],
+        correct: 0,
+        why: 'A single pendulum has only one angle. Its phase portrait follows a curve of constant energy, so it can’t wander chaotically.',
+      }],
+      quantities(an, row) {
+        const p = an.p;
+        row('T0', 'Period for small swings, 2π√(L/g)', 's', 2 * Math.PI * Math.sqrt(p.L / an.g));
+        if (!p.b && Math.abs(an.y0[0]) < Math.PI) {
+          const v = Math.sqrt(p.L * p.L * an.y0[1] * an.y0[1] + 2 * an.g * p.L * (1 - Math.cos(an.y0[0])));
+          row('vb', 'Speed of the bob at the bottom', 'm/s', v, 'use conservation of energy');
+        }
+      },
+      solution(an) {
+        const p = an.p;
+        const g = fmt(an.g);
+        return '<section><h3>1. The equation of motion</h3><p>Only the weight’s component along the arc, mg sin θ, changes the bob’s speed. Newton’s second law along the arc gives</p>' +
+          '<div class="eq">m L α = −m g sin θ' + (p.b ? ' − (damping)' : '') + '   →   α = −(g/L) sin θ' + (p.b ? ' − b ω' : '') + '</div>' +
+          '<p>For small angles sin θ ≈ θ, so the motion is simple harmonic with period T = 2π√(L/g) = 2π√(' + fmt(p.L) + ' / ' + g + ') = ' + fmt(2 * Math.PI * Math.sqrt(p.L / an.g)) + ' s. Bigger swings take a little longer.</p></section>' +
+          '<section><h3>2. Reading the phase portrait</h3><p>Each point plots θ and ω at one instant. With no damping, energy is conserved, so the point moves along a curve of constant energy: a closed loop for back-and-forth swinging, or a wavy band across the whole plot if the bob goes over the top. Either way, the path repeats.' +
+          (p.b ? ' With damping, energy drains away, so the loop spirals in toward the bottom (θ = 0, ω = 0).' : '') + '</p></section>' +
+          '<section><h3>3. Why it can’t be chaotic</h3><p>The state is just two numbers (θ, ω), and paths in a 2-D phase portrait can’t cross. With nowhere to wander, the motion stays regular. A twin started nearby has a slightly different period, so the gap between them grows slowly (in proportion to time), never exponentially. Chaos needs at least three dimensions in phase space: the double pendulum has four, and the driven pendulum has three (θ, ω and the drive’s phase).</p></section>';
       },
     },
+
     double: {
       label: 'Double pendulum',
+      blurb: 'A pendulum hanging from a pendulum. Small swings are regular; big swings are chaotic.',
       bodies: ['Upper bob', 'Lower bob'],
-      angleIdx: [0, 2],
-      omegaIdx: [1, 3],
-      defaults: () => ({ m1: 1, m2: 1, L1: 1, L2: 1, th1: 120, th2: -30 }),
-      presets: { small: { th1: 10, th2: 10 }, big: { th1: 120, th2: -30 } },
-      params: (c) => ({ g: state.g, ...c.double }),
-      y0: (c) => [c.double.th1 * DEG, 0, c.double.th2 * DEG, 0],
+      ode: 'double',
+      T: 60,
+      dt: 0.001,
+      sample: 0.01,
+      twinText: 'a twin started ' + TWIN_D + '° away',
+      fields: [
+        ['m1', 'Upper mass m₁', 'kg', 1, 0.1, 10, 0.1],
+        ['m2', 'Lower mass m₂', 'kg', 1, 0.1, 10, 0.1],
+        ['L1', 'Upper rod L₁', 'm', 1, 0.1, 3, 0.1],
+        ['L2', 'Lower rod L₂', 'm', 1, 0.1, 3, 0.1],
+        ['th1', 'Starting angle θ₁', '°', 120, -179, 179, 1],
+        ['th2', 'Starting angle θ₂', '°', -30, -179, 179, 1],
+      ],
+      note: 'Both rods start at rest. Angles are from straight down; positive is counterclockwise.',
+      presets: [['small', 'Small swings', { th1: 10, th2: 10 }], ['big', 'Big swings', { th1: 120, th2: -30 }]],
+      params: (s) => ({ g: G_(), m1: s.m1, m2: s.m2, L1: s.L1, L2: s.L2 }),
+      y0: (s) => [s.th1 * DEG, 0, s.th2 * DEG, 0],
       nudge: (y) => [y[0] + TWIN_D * DEG, y[1], y[2], y[3]],
+      sepOf: (a, b, i) => angDist(a, b, i, [0, 2]),
+      sepUnit: 'rad',
       positions(p, y) {
         const b1 = { x: p.L1 * Math.sin(y[0]), y: -p.L1 * Math.cos(y[0]) };
         return [b1, { x: b1.x + p.L2 * Math.sin(y[2]), y: b1.y - p.L2 * Math.cos(y[2]) }];
       },
       reach: (p) => p.L1 + p.L2,
-      controls(c) {
-        const d = c.double;
-        return numField('Upper mass m₁', 'double.m1', d.m1, 'kg', { min: 0.1, max: 10, step: 0.1 }) +
-          numField('Lower mass m₂', 'double.m2', d.m2, 'kg', { min: 0.1, max: 10, step: 0.1 }) +
-          numField('Upper rod L₁', 'double.L1', d.L1, 'm', { min: 0.1, max: 3, step: 0.1 }) +
-          numField('Lower rod L₂', 'double.L2', d.L2, 'm', { min: 0.1, max: 3, step: 0.1 }) +
-          numField('Starting angle θ₁', 'double.th1', d.th1, '°', { min: -179, max: 179, step: 1 }) +
-          numField('Starting angle θ₂', 'double.th2', d.th2, '°', { min: -179, max: 179, step: 1 }) +
-          '<p class="note">Both rods start at rest. Angles are from straight down; positive is counterclockwise.</p>';
+      scene(ctx, an, box, t) {
+        drawRigScene(ctx, an, box, t, this);
+      },
+      live: () => (ui.track ? { type: 'portrait', pair: [2, 3], wrapX: true, xLabel: 'θ₂ (rad)', yLabel: 'ω₂ (rad/s)', title: 'Phase portrait, lower bob' } : { type: 'portrait', pair: [0, 1], wrapX: true, xLabel: 'θ₁ (rad)', yLabel: 'ω₁ (rad/s)', title: 'Phase portrait, upper bob' }),
+      graphs: () => [
+        { id: 'p1', type: 'portrait', label: 'Phase portrait: upper bob', pair: [0, 1], wrapX: true, xLabel: 'angle θ₁ (rad)', yLabel: 'angular velocity ω₁ (rad/s)', hint: 'Regular motion traces a tidy band; chaotic motion scribbles over a wide region and splits away from its twin.' },
+        { id: 'p2', type: 'portrait', label: 'Phase portrait: lower bob', pair: [2, 3], wrapX: true, xLabel: 'angle θ₂ (rad)', yLabel: 'angular velocity ω₂ (rad/s)', hint: 'Regular motion traces a tidy band; chaotic motion scribbles over a wide region and splits away from its twin.' },
+        { id: 'time', type: 'time', label: 'Angle–time', series: [{ idx: 0, label: 'θ₁: upper bob' }, { idx: 2, label: 'θ₂: lower bob', color: 'f-a' }], wrap: true, yLabel: 'angle (rad)', hint: 'Both angles against time. Watch the twin (pink) follow at first, then go its own way.' },
+        { id: 'sep', type: 'separation', label: 'Separation from the twin (log scale)', hint: 'The distance between the two pendulums’ angles. A straight rising line on this log scale is exponential growth: the signature of chaos.' },
+        { id: 'poin', type: 'poincare', label: 'Poincaré section', hint: 'One dot each time the upper rod swings through straight down, moving counterclockwise (1000 s of motion). Regular motion gives dots on smooth curves; chaos gives a scattered cloud.' },
+        { id: 'spec', type: 'spectrum', label: 'Frequency spectrum', fmax: () => 4, hint: 'Small swings: a few sharp peaks (the two normal modes). Chaos: a broad, noisy spread of frequencies.' },
+        { id: 'energy', type: 'energy', label: 'Energy–time', hint: 'Total mechanical energy, with the pivot as height zero.' },
+        { id: 'map', type: 'map', label: 'Fractal flip map', hint: 'Each pixel is a different pair of starting angles (both rods at rest). Its color shows how long until either rod flips over the top. Click a pixel to start from there.' },
+      ],
+      spectrumSeries: (an) => ({ vals: an.run.y[3], dt: an.run.t[1], unit: 'Hz', what: 'the lower bob’s angular velocity ω₂' }),
+      poincare(an) {
+        return {
+          pts: P.poincareDouble(an.p, an.y0, 1000),
+          xRange: [-Math.PI, Math.PI],
+          xTicks: PI_TICKS,
+          xLabel: 'θ₂ when θ₁ = 0 (rad)',
+          yLabel: 'ω₂ when θ₁ = 0 (rad/s)',
+          note: 'Smooth curves: regular. A scattered cloud: chaos.',
+        };
+      },
+      map: {
+        n: 80,
+        xr: [-Math.PI, Math.PI],
+        yr: [-Math.PI, Math.PI],
+        ticks: PI_TICKS,
+        xLabel: 'starting θ₁ (rad)',
+        yLabel: 'starting θ₂ (rad)',
+        keyOf: (an) => [an.p.m1, an.p.m2, an.p.L1, an.p.L2, an.p.g],
+        cell: (an, x, y) => P.flipTime(an.p, x, y, FLIP_T, 0.01),
+        color: (an, t) => (isFinite(t) ? rampColor(MAP_FLIP, Math.log(Math.max(t, 0.5) / 0.5) / Math.log(FLIP_T / 0.5)) : [12, 12, 14]),
+        current: (an) => [wrapPi(an.y0[0]), wrapPi(an.y0[2])],
+        set(c, x, y) {
+          c.double.th1 = Math.max(-179, Math.min(179, Math.round(x / DEG)));
+          c.double.th2 = Math.max(-179, Math.min(179, Math.round(y / DEG)));
+        },
+        legend: () => [[rgb(rampColor(MAP_FLIP, 0)), 'flips within 0.5 s'], [rgb(rampColor(MAP_FLIP, 0.5)), 'about 3 s'], [rgb(rampColor(MAP_FLIP, 1)), 'about 20 s'], ['rgb(12,12,14)', 'no flip in 20 s']],
+      },
+      readouts(an, y) {
+        const b = Math.min(ui.track, 1);
+        return [{ label: 'Angle θ' + sub(b + 1), value: fmt(wrapPi(y[2 * b]) / DEG, 1) + '°' }, { label: 'Angular velocity ω' + sub(b + 1), value: fmt(y[2 * b + 1]) + ' rad/s' }];
+      },
+      mcq: (an) => [
+        {
+          key: 'chaos2',
+          q: 'A twin double pendulum starts just ' + TWIN_D + '° away. After 20 s, how will their motions compare?',
+          options: ['Still nearly the same', 'Completely different'],
+          correct: an.sep20 > 0.3 ? 1 : 0,
+          why: an.sep20 > 0.3
+            ? 'With these big swings the motion is chaotic: the tiny difference grows until the twins are unrelated. (After 20 s their angles differ by ' + fmt(an.sep20 / DEG, 0) + '°.)'
+            : 'With these small swings the motion is regular: the twins stay together. (After 20 s their angles differ by only ' + fmt(an.sep20 / DEG, 2) + '°.)',
+        },
+        {
+          key: 'chaos3',
+          q: 'On the fractal flip map, what does a speckled region with colors changing from pixel to pixel mean?',
+          options: ['Starting angles there are chaotic: a tiny change in the start changes when (or whether) it flips', 'The computer made rounding errors there', 'The pendulum flips at exactly the same time everywhere there'],
+          correct: 0,
+          why: 'Smooth patches are regular: nearby starts behave alike. Where neighbouring pixels disagree, the outcome depends sensitively on the start, which is chaos.',
+        },
+      ],
+      quantities(an, row) {
+        row('E', 'Total energy at the start', 'J', Math.abs(an.E0), 'take the pivot as height zero; enter the size');
+      },
+      solution(an) {
+        return '<section><h3>1. Equations of motion</h3><p>The two angles depend on each other: the lower rod pulls on the upper bob and the upper bob drags the lower rod. Applying Newton’s laws to both bobs (or using energy methods) gives two coupled equations:</p>' +
+          '<div class="eq">α₁ = [m₂L₁ω₁² sin Δ cos Δ + m₂g sin θ₂ cos Δ + m₂L₂ω₂² sin Δ − (m₁+m₂)g sin θ₁] / [(m₁+m₂)L₁ − m₂L₁cos²Δ]\nα₂ = [−m₂L₂ω₂² sin Δ cos Δ + (m₁+m₂)(g sin θ₁ cos Δ − L₁ω₁² sin Δ − g sin θ₂)] / [(L₂/L₁)((m₁+m₂)L₁ − m₂L₁cos²Δ)]\nwith Δ = θ₂ − θ₁</div>' +
+          '<p>They can’t be solved with a formula, so the computer steps them forward in time (4th-order Runge–Kutta, 1 ms steps).</p></section>' +
+          '<section><h3>2. Energy is still conserved</h3><p>Taking the pivot as height zero and starting from rest:</p>' +
+          '<div class="eq">E = −(m₁+m₂) g L₁ cos θ₁ − m₂ g L₂ cos θ₂ = ' + fmt(an.E0) + ' J</div><p>Chaos doesn’t break energy conservation; the motion is fully determined by Newton’s laws. It is unpredictable only because tiny differences grow.</p></section>' +
+          '<section><h3>3. Small swings versus big swings</h3><p>For small angles the equations are nearly linear: the motion is a mix of two steady swinging patterns (normal modes), the phase portrait fills a tidy band, and the Poincaré section shows smooth curves. A twin started ' + TWIN_D + '° away stays close.</p>' +
+          '<p>For big swings the nonlinear terms take over. The phase portrait scribbles without repeating, the Poincaré section becomes a scattered cloud, and the twin’s ' + TWIN_D + '° difference grows exponentially' + lyapText(an) + '. ' +
+          (an.sep20 > 0.3 ? 'In this run the twins differ by ' + fmt(an.sep20 / DEG, 0) + '° after 20 s.' : 'In this run they differ by only ' + fmt(an.sep20 / DEG, 2) + '° after 20 s, so these starting angles are not chaotic.') + '</p></section>' +
+          '<section><h3>4. The fractal flip map</h3><p>Starting both rods from rest, a pendulum can only flip over the top if it has enough energy, so the middle of the map (small angles) never flips. Further out, the map shows how long each start takes to flip. Its edges are fractal: zoomed in, the speckles never smooth out, because the flip time depends sensitively on the starting angles.</p></section>';
+      },
+    },
+
+    driven: {
+      label: 'Driven, damped pendulum',
+      blurb: 'A pendulum with friction, pushed back and forth by a motor at the pivot. Turn up the drive to see period doubling and chaos.',
+      bodies: ['Bob'],
+      ode: 'driven',
+      T: 90,
+      dt: 0.002,
+      sample: 0.01,
+      twinText: 'a twin started ' + TWIN_D + '° away',
+      fields: [
+        ['L', 'Length L', 'm', 1, 0.1, 5, 0.1],
+        ['A', 'Drive strength A (× weight)', '', 1.15, 0, 2, 0.01],
+        ['W', 'Drive frequency (× natural frequency)', '', 0.667, 0.1, 2, 0.001],
+        ['q', 'Quality factor q (low = lots of friction)', '', 2, 0.5, 10, 0.1],
+        ['th', 'Starting angle θ₀', '°', 11.5, -179, 179, 0.5],
+      ],
+      note: 'The motor twists the pendulum with a torque A·mgL·cos(Ωt). A = 1 means the twist is as big as the largest twist gravity can give. Starts at rest.',
+      presets: [['p1', 'A = 0.90: steady', { A: 0.9, W: 0.667, q: 2 }], ['p2', 'A = 1.07: period 2', { A: 1.07, W: 0.667, q: 2 }], ['ch', 'A = 1.15: chaos', { A: 1.15, W: 0.667, q: 2 }], ['p4', 'A = 1.47: period 4', { A: 1.47, W: 0.667, q: 2 }]],
+      params: (s) => ({ g: G_(), L: s.L, A: s.A, W: s.W, q: s.q }),
+      y0: (s) => [s.th * DEG, 0, 0],
+      nudge: (y) => [y[0] + TWIN_D * DEG, y[1], y[2]],
+      sepOf: (a, b, i) => angDist(a, b, i, [0]),
+      sepUnit: 'rad',
+      positions: (p, y) => [{ x: p.L * Math.sin(y[0]), y: -p.L * Math.cos(y[0]) }],
+      reach: (p) => p.L,
+      drivePeriod: (p) => (2 * Math.PI) / (p.W * Math.sqrt(p.g / p.L)),
+      scene(ctx, an, box, t) {
+        const y = sampleAt(an.run, tRun(an, t));
+        drawRigScene(ctx, an, box, t, this, (cx, cy) => {
+          // the motor's twist: a curved arrow whose size follows A cos(phase)
+          const tw = an.p.A * Math.cos(y[2]);
+          const r = 26;
+          const span = Math.max(-1.6, Math.min(1.6, tw * 0.9));
+          if (Math.abs(span) < 0.05) return;
+          ctx.save();
+          ctx.strokeStyle = C['f-a'];
+          ctx.fillStyle = C['f-a'];
+          ctx.lineWidth = 3;
+          const a0 = -Math.PI / 2;
+          const a1 = a0 - span;
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, Math.min(a0, a1), Math.max(a0, a1));
+          ctx.stroke();
+          const hx = cx + r * Math.cos(a1);
+          const hy = cy + r * Math.sin(a1);
+          const dir = span > 0 ? -1 : 1;
+          const tx = -Math.sin(a1) * dir;
+          const ty = Math.cos(a1) * dir;
+          ctx.beginPath();
+          ctx.moveTo(hx + tx * 9, hy + ty * 9);
+          ctx.lineTo(hx - ty * 6, hy + tx * 6);
+          ctx.lineTo(hx + ty * 6, hy - tx * 6);
+          ctx.fill();
+          ctx.restore();
+          labelText(ctx, 'motor twist', cx, cy - r - 12, C['f-a'], 'center', 12, 600, C.fontBody);
+        });
+      },
+      strobeSoFar(an, tNow) {
+        const Td = this.drivePeriod(an.p);
+        const out = [];
+        const tr = tRun(an, tNow);
+        for (let k = 1; k * Td <= tr; k++) {
+          const y = sampleAt(an.run, k * Td);
+          out.push([wrapPi(y[0]), y[1]]);
+        }
+        return out;
+      },
+      live: () => ({ type: 'portrait', pair: [0, 1], wrapX: true, strobe: true, xLabel: 'θ (rad)', yLabel: 'ω (rad/s)', title: 'Phase portrait (dots: once per drive cycle)' }),
+      graphs: () => [
+        { id: 'portrait', type: 'portrait', label: 'Phase portrait (θ vs ω)', pair: [0, 1], wrapX: true, strobe: true, xLabel: 'angle θ (rad)', yLabel: 'angular velocity ω (rad/s)', hint: 'The round dots mark the state once per drive cycle. One repeating dot: period 1. Two: period 2. A spreading cloud: chaos.' },
+        { id: 'time', type: 'time', label: 'Angle–time', series: [{ idx: 0, label: 'θ' }], wrap: true, yLabel: 'angle θ (rad)', hint: 'The angle against time. After the start-up, regular motion repeats every one, two or four drive cycles; chaos never repeats.' },
+        { id: 'sep', type: 'separation', label: 'Separation from the twin (log scale)', hint: 'For a chaotic setting the gap grows exponentially (a straight rising line on this log scale). For a steady setting it shrinks: friction pulls both onto the same motion.' },
+        { id: 'poin', type: 'poincare', label: 'Poincaré section (strobe)', hint: 'The state once per drive cycle, for 1500 cycles. A few dots: periodic. A folded, layered shape: a strange attractor.' },
+        { id: 'bif', type: 'bifurcation', label: 'Bifurcation diagram', hint: 'Across: drive strength A. Up: ω at each drive cycle (after the start-up). One branch is period 1; it splits into 2, 4, … and then chaos. Click to choose A.' },
+        { id: 'spec', type: 'spectrum', label: 'Frequency spectrum', fmax: (an) => 4 / an.drivePeriod, hint: 'Period 1: peaks at the drive frequency and its multiples. Period doubling adds peaks at half the drive frequency. Chaos fills in between.' },
+      ],
+      spectrumSeries: (an) => {
+        const i0 = Math.round(30 / an.run.t[1]);
+        return { vals: an.run.y[1].subarray(i0), dt: an.run.t[1], unit: 'Hz', what: 'ω after the first 30 s' };
+      },
+      poincare(an) {
+        const r = P.strobeDriven(an.p, an.y0, 30, 1500, 200);
+        return { pts: r.pts, xRange: [-Math.PI, Math.PI], xTicks: PI_TICKS, xLabel: 'θ at each drive cycle (rad)', yLabel: 'ω at each drive cycle (rad/s)', note: 'Each dot is one drive cycle.' };
+      },
+      bif: {
+        from: 0.9,
+        to: 1.5,
+        cols: 240,
+        xLabel: 'drive strength A',
+        yLabel: 'ω at each drive cycle (rad/s)',
+        keyOf: (an) => [an.p.L, an.p.W, an.p.q, an.p.g],
+        column(an, A, carry) {
+          const r = P.strobeDriven({ ...an.p, A }, carry || [0.2, 0, 0], carry ? 40 : 120, 40, 150);
+          return { ys: r.pts.map((q) => q[1]), carry: r.state };
+        },
+        current: (an) => an.p.A,
+        set(c, v) {
+          c.driven.A = Math.round(v * 100) / 100;
+        },
+      },
+      readouts: (an, y) => [{ label: 'Angle θ', value: fmt(wrapPi(y[0]) / DEG, 1) + '°' }, { label: 'Angular velocity ω', value: fmt(y[1]) + ' rad/s' }],
+      extra(an) {
+        an.drivePeriod = this.drivePeriod(an.p);
+        const r = P.strobeDriven(an.p, an.y0, 150, 64, 200);
+        an.cycle = P.countCycle(r.pts.map((q) => q[0]), 1e-3);
+      },
+      mcq: (an) => [
+        {
+          key: 'chaos4',
+          q: 'With A = ' + fmt(an.p.A, 2) + ', once the start-up dies away, how often does the motion repeat?',
+          options: ['Every drive cycle (period 1)', 'Every 2 drive cycles (period 2)', 'Every 4 drive cycles (period 4)', 'Never: it is chaotic (or has a very long period)'],
+          correct: an.cycle === 1 ? 0 : an.cycle === 2 ? 1 : an.cycle === 4 ? 2 : 3,
+          why: 'Look at the round strobe dots on the phase portrait, or the bifurcation diagram at your A. ' +
+            (an.cycle === 1 ? 'Here they land on one spot.' : an.cycle === 2 ? 'Here they alternate between two spots.' : an.cycle === 4 ? 'Here they cycle through four spots.' : 'Here they never settle onto a repeating set.'),
+        },
+        {
+          key: 'chaos5',
+          q: 'Why can the driven pendulum be chaotic when the plain single pendulum can’t?',
+          options: ['The drive adds a third variable (the drive’s phase), so paths in phase space have room to wander without crossing', 'Friction makes it random', 'The motor pushes at random times'],
+          correct: 0,
+          why: 'The equation is completely regular and the motor is perfectly steady. Chaos needs three or more state variables: here θ, ω and the drive’s phase.',
+        },
+      ],
+      quantities(an, row) {
+        const T0 = 2 * Math.PI * Math.sqrt(an.p.L / an.g);
+        row('T0', 'Natural period for small swings, 2π√(L/g)', 's', T0);
+        row('Td', 'Period of the drive', 's', T0 / an.p.W, 'the drive frequency is ' + fmt(an.p.W, 3) + ' × the natural frequency');
+      },
+      solution(an) {
+        const p = an.p;
+        const w0 = Math.sqrt(an.g / p.L);
+        return '<section><h3>1. The equation of motion</h3><p>Three torques act: gravity, friction that opposes the motion, and the motor’s steady back-and-forth twist. Newton’s second law for rotation, divided by mL², gives</p>' +
+          '<div class="eq">α = −ω₀² sin θ − (ω₀/q) ω + A ω₀² cos(Ω t)\nω₀ = √(g/L) = ' + fmt(w0, 3) + ' rad/s,   Ω = ' + fmt(p.W, 3) + ' ω₀ = ' + fmt(p.W * w0, 3) + ' rad/s</div>' +
+          '<p>The drive period is 2π/Ω = ' + fmt(an.drivePeriod) + ' s. Every term is fixed and steady: nothing random is added.</p></section>' +
+          '<section><h3>2. The route to chaos</h3><p>With a weak drive the pendulum settles into a swing that repeats once per drive cycle. Raising A, the swing repeats only every 2 cycles (period doubling), then every 4, 8, … and finally never: chaos. The bifurcation diagram shows this cascade. Inside the chaotic range there are windows where steady motion returns.</p>' +
+          '<p>At A = ' + fmt(p.A, 2) + ' the motion ' + (an.cycle === 1 ? 'repeats every drive cycle.' : an.cycle === 2 ? 'repeats every 2 drive cycles.' : an.cycle === 4 ? 'repeats every 4 drive cycles.' : 'does not settle into a repeating pattern: it is chaotic' + lyapText(an) + '.') + '</p></section>' +
+          '<section><h3>3. The strange attractor</h3><p>Friction removes energy and the motor adds it, so the motion settles onto an “attractor”. Strobing once per drive cycle (the Poincaré section) shows it. Periodic motion gives a few dots. Chaotic motion gives a folded, layered shape that is fractal: the same structure repeats at smaller scales.</p></section>';
+      },
+    },
+
+    lorenz: {
+      label: 'Lorenz equations',
+      blurb: 'A simple model of air rising in a heated layer (convection), from Edward Lorenz, a weather scientist. It gave us the “butterfly effect”.',
+      bodies: ['State (x, y, z)'],
+      ode: 'lorenz',
+      T: 40,
+      dt: 0.002,
+      sample: 0.01,
+      twinText: 'a twin started 0.001 away in x',
+      fields: [
+        ['sigma', 'σ (Prandtl number)', '', 10, 0.1, 30, 0.1],
+        ['rho', 'ρ (how hard it is heated)', '', 28, 0, 200, 0.1],
+        ['beta', 'β (shape of the cell)', '', 2.667, 0.1, 10, 0.001],
+        ['x0', 'Starting x', '', 1, -30, 30, 0.1],
+        ['y0', 'Starting y', '', 1, -30, 30, 0.1],
+        ['z0', 'Starting z', '', 1, 0, 60, 0.1],
+      ],
+      note: 'x is the speed of the rolling air, y and z describe the temperature pattern. Lorenz used σ = 10, ρ = 28, β = 8/3.',
+      presets: [['classic', 'Classic (ρ = 28)', { sigma: 10, rho: 28, beta: 2.667 }], ['steady', 'Steady (ρ = 14)', { sigma: 10, rho: 14, beta: 2.667 }], ['loop', 'Periodic (ρ = 160)', { sigma: 10, rho: 160, beta: 2.667, x0: 1, y0: 1, z0: 1 }]],
+      params: (s) => ({ sigma: s.sigma, rho: s.rho, beta: s.beta }),
+      y0: (s) => [s.x0, s.y0, s.z0],
+      nudge: (y) => [y[0] + 0.001, y[1], y[2]],
+      sepOf: (a, b, i) => Math.hypot(a.y[0][i] - b.y[0][i], a.y[1][i] - b.y[1][i], a.y[2][i] - b.y[2][i]),
+      sepUnit: 'x, y, z units',
+      scene(ctx, an, box, t) {
+        // a slowly turning 3-D view
+        const n = idxAt(an, t);
+        const R = an.box3;
+        const ang = 0.45 * Math.sin(0.06 * tRun(an, t));
+        const ca = Math.cos(ang);
+        const sa = Math.sin(ang);
+        const proj = (x, y, z) => [x * ca + y * sa, z - R.zc + 0.2 * (y * ca - x * sa)];
+        const sc = Math.min((box.w - 30) / (2 * R.r), (box.h - 70) / (R.zh + 0.5 * R.r));
+        const cx = box.x0 + box.w / 2;
+        const cy = box.y0 + box.h / 2 + 22;
+        const S2 = (q) => [cx + q[0] * sc, cy - q[1] * sc];
+        const path = (run, color, alpha, width, from) => {
+          ctx.save();
+          ctx.strokeStyle = color;
+          ctx.globalAlpha = alpha;
+          ctx.lineWidth = width;
+          ctx.beginPath();
+          for (let i = from; i <= n; i++) {
+            const [px, py] = S2(proj(run.y[0][i], run.y[1][i], run.y[2][i]));
+            i > from ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+          }
+          ctx.stroke();
+          ctx.restore();
+        };
+        path(an.run, C.accent, 0.35, 1, 0);
+        if (an.twinOn) path(an.twin, C.l2, 0.9, 1.6, Math.max(0, n - 150));
+        if (an.trail) path(an.run, C.accent, 1, 2, Math.max(0, n - 150));
+        if (an.twinOn) dotAt(ctx, ...S2(proj(an.twin.y[0][n], an.twin.y[1][n], an.twin.y[2][n])), C.l2, 5);
+        dotAt(ctx, ...S2(proj(an.run.y[0][n], an.run.y[1][n], an.run.y[2][n])), C.accent, 6);
+        // the two steady-convection points
+        if (an.p.rho > 1) {
+          const q = Math.sqrt(an.p.beta * (an.p.rho - 1));
+          [[q, q], [-q, -q]].forEach(([x, y]) => {
+            const [px, py] = S2(proj(x, y, an.p.rho - 1));
+            ctx.save();
+            ctx.strokeStyle = C.muted;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(px - 5, py - 5);
+            ctx.lineTo(px + 5, py + 5);
+            ctx.moveTo(px + 5, py - 5);
+            ctx.lineTo(px - 5, py + 5);
+            ctx.stroke();
+            ctx.restore();
+          });
+        }
+        sceneTitle(ctx, an, box);
+        labelText(ctx, '× marks the two steady states. The view sways slowly.', box.x0 + 12, box.y0 + box.h - 12, C.muted, 'left', 12, 400, C.fontBody);
+      },
+      live: () => ({ type: 'time', series: [{ idx: 0, label: 'x' }], window: 15, yLabel: 'x', title: 'x against time' }),
+      graphs: () => [
+        { id: 'xz', type: 'portrait', label: 'Butterfly: x vs z', pair: [0, 2], xLabel: 'x', yLabel: 'z', hint: 'The famous butterfly-shaped attractor. The path loops around one wing, then the other, in an order that never repeats.' },
+        { id: 'xy', type: 'portrait', label: 'Phase portrait: x vs y', pair: [0, 1], xLabel: 'x', yLabel: 'y', hint: 'Another view of the same path.' },
+        { id: 'time', type: 'time', label: 'x–time', series: [{ idx: 0, label: 'x' }], yLabel: 'x', hint: 'x flips between positive (one wing) and negative (the other) at unpredictable moments. Watch the twin (pink) follow, then split away.' },
+        { id: 'sep', type: 'separation', label: 'Separation from the twin (log scale)', hint: 'The distance between the two paths. The straight rising part is exponential growth: the butterfly effect.' },
+        { id: 'poin', type: 'poincare', label: 'Lorenz map (one peak vs the next)', hint: 'Each dot plots one peak of z against the next peak (200 s of motion). Lorenz found the dots fall on a thin curve with a sharp tip, so each peak decides the next one, yet the sequence is chaotic.' },
+        { id: 'bif', type: 'bifurcation', label: 'Bifurcation diagram', hint: 'Across: heating ρ. Up: the peaks of z after the start-up. Below about ρ = 24.7 the motion settles to a steady state (a single value); above it, chaos, with windows of periodic looping. Click to choose ρ.' },
+        { id: 'spec', type: 'spectrum', label: 'Frequency spectrum', fmax: () => 3, hint: 'A broad spread of frequencies: chaos. In a periodic window the spectrum shows sharp peaks.' },
+      ],
+      spectrumSeries: (an) => ({ vals: an.run.y[0].subarray(Math.round(5 / an.run.t[1])), dt: an.run.t[1], unit: 'cycles per time unit', what: 'x after the first 5 time units' }),
+      poincare(an) {
+        const pts = P.lorenzMaxima(an.p, an.y0, 200);
+        return { pts, xLabel: 'one peak of z', yLabel: 'the next peak of z', note: pts.length ? 'Points along a thin curve: each peak sets the next.' : 'No peaks: the motion settled to a steady state.' };
+      },
+      bif: {
+        from: 1,
+        to: 200,
+        cols: 200,
+        xLabel: 'heating ρ',
+        yLabel: 'peaks of z',
+        keyOf: (an) => [an.p.sigma, an.p.beta],
+        column(an, rho, carry) {
+          const p = { ...an.p, rho };
+          const step = P.stepper(P.PENDULUMS.lorenz.rhs(p), 3);
+          const y = Float64Array.from(carry || [1, 1, 1]);
+          if (Math.hypot(y[0], y[1]) < 0.5) {
+            y[0] += 1;
+            y[1] += 1;
+          }
+          const dt = 0.004;
+          for (let t = 0; t < 60; t += dt) step(y, dt);
+          const ys = [];
+          let z0 = y[2];
+          let z1 = y[2];
+          for (let t = 0; t < 30 && ys.length < 60; t += dt) {
+            step(y, dt);
+            if (z1 > z0 && z1 >= y[2]) ys.push(z1);
+            z0 = z1;
+            z1 = y[2];
+          }
+          if (!ys.length) ys.push(y[2]);
+          return { ys, carry: Array.from(y) };
+        },
+        current: (an) => an.p.rho,
+        set(c, v) {
+          c.lorenz.rho = Math.round(v * 10) / 10;
+        },
+      },
+      readouts: (an, y) => [{ label: 'x, y, z', value: fmt(y[0], 1) + ', ' + fmt(y[1], 1) + ', ' + fmt(y[2], 1) }, { label: 'Wing', value: y[0] >= 0 ? 'right (x > 0)' : 'left (x < 0)' }],
+      extra(an) {
+        let r = 0;
+        let zl = Infinity;
+        let zhi = -Infinity;
+        for (const run of [an.run, an.twin]) {
+          for (let i = 0; i < run.t.length; i++) {
+            r = Math.max(r, Math.hypot(run.y[0][i], run.y[1][i]));
+            zl = Math.min(zl, run.y[2][i]);
+            zhi = Math.max(zhi, run.y[2][i]);
+          }
+        }
+        an.box3 = { r: Math.max(r, 1), zc: (zl + zhi) / 2, zh: Math.max(zhi - zl, 1) };
+        // does it settle? spread of z over the last 10 time units
+        const i0 = an.run.t.length - Math.round(10 / an.run.t[1]);
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (let i = i0; i < an.run.t.length; i++) {
+          lo = Math.min(lo, an.run.y[2][i]);
+          hi = Math.max(hi, an.run.y[2][i]);
+        }
+        an.settles = hi - lo < 0.5;
+      },
+      mcq: (an) => [
+        {
+          key: 'chaos6',
+          q: 'With ρ = ' + fmt(an.p.rho, 1) + ', what does the motion do in the long run?',
+          options: ['Settles to a steady state (the path stops at a point)', 'Keeps moving forever without settling'],
+          correct: an.settles ? 0 : 1,
+          why: an.settles ? 'With this little heating, the rolling air settles into steady convection (or stops): a fixed point.' : 'With this much heating there is no steady state that attracts the motion, so it keeps looping around' + (an.lyap && an.lyap.ok ? ' chaotically' : '') + '.',
+        },
+        {
+          key: 'chaos7',
+          q: 'The Lorenz equations have no randomness in them. Why can’t anyone predict the path far ahead?',
+          options: ['Any tiny error in the starting values grows exponentially until it is as big as the whole attractor', 'The equations change at random', 'Computers can only solve them for a few seconds'],
+          correct: 0,
+          why: 'This is the butterfly effect: the twin started just 0.001 away ends up on the other wing. Weather forecasts lose accuracy after about two weeks for the same reason.',
+        },
+      ],
+      quantities(an, row) {
+        if (an.p.rho > 1) {
+          row('zf', 'z at the steady states, ρ − 1', '', an.p.rho - 1, 'set dx/dt = dy/dt = dz/dt = 0');
+          row('xf', 'x at the right-hand steady state, √(β(ρ − 1))', '', Math.sqrt(an.p.beta * (an.p.rho - 1)));
+        }
+      },
+      solution(an) {
+        const p = an.p;
+        const q = p.rho > 1 ? Math.sqrt(p.beta * (p.rho - 1)) : 0;
+        return '<section><h3>1. The equations</h3><div class="eq">dx/dt = σ (y − x)\ndy/dt = x (ρ − z) − y\ndz/dt = x y − β z</div><p>Lorenz simplified the equations for air heated from below (Newton’s second law for a fluid, plus heat flow) down to three variables. They contain no randomness at all.</p></section>' +
+          '<section><h3>2. The steady states</h3><p>Setting all three rates to zero: x = y, then x(ρ − 1 − z) = 0 and x² = βz. Besides the origin (no motion),' +
+          (p.rho > 1 ? ' there are two steady rolls with</p><div class="eq">z = ρ − 1 = ' + fmt(p.rho - 1) + '\nx = y = ±√(β(ρ − 1)) = ±' + fmt(q) + '</div><p>' : ' there are none here, because ρ < 1: the air just stops.</p><p>') +
+          'These are steady (attracting) only for ρ below about 24.7 with σ = 10, β = 8/3. Above that, nothing steady attracts the motion, and it wanders chaotically between the two.</p></section>' +
+          '<section><h3>3. The butterfly effect</h3><p>Two starts 0.001 apart separate exponentially' + lyapText(an) + ' until they are on different wings. (Careful measurements give λ ≈ 0.9 for the classic values.) Since every measurement has some error, long-range prediction is impossible, even with perfect equations.</p></section>' +
+          '<section><h3>4. The Lorenz map</h3><p>Plotting each peak of z against the next gives a thin, tent-shaped curve: the next peak is determined by the last one, just like the logistic map’s xₙ₊₁ = f(xₙ). A steep curve stretches small differences, which is where the chaos comes from.</p></section>';
+      },
+    },
+
+    logistic: {
+      label: 'Logistic map',
+      blurb: 'The simplest chaos: a population rule xₙ₊₁ = r xₙ (1 − xₙ), applied over and over. One new value every 0.2 s.',
+      bodies: ['Population x'],
+      twinText: 'a twin started 0.000001 higher',
+      discrete: true,
+      fields: [
+        ['r', 'Growth rate r', '', 3.9, 0, 4, 0.001],
+        ['x0', 'Starting value x₀', '', 0.2, 0, 1, 0.001],
+      ],
+      note: 'x is the population as a fraction of the most the habitat can hold. Each step, r x grows it and (1 − x) holds it back.',
+      presets: [['p1', 'r = 2.8: one value', { r: 2.8 }], ['p2', 'r = 3.2: 2-cycle', { r: 3.2 }], ['p4', 'r = 3.5: 4-cycle', { r: 3.5 }], ['p3', 'r = 3.83: 3-cycle', { r: 3.83 }], ['ch', 'r = 3.9: chaos', { r: 3.9 }]],
+      params: (s) => ({ r: s.r }),
+      sepUnit: '',
+      simulate(an) {
+        const N = 120;
+        const x0 = an.s.x0;
+        const t = new Float64Array(N + 1).map((_, i) => i);
+        const a = P.logisticOrbit(an.p.r, x0, N);
+        const b = P.logisticOrbit(an.p.r, Math.min(1, x0 + 1e-6), N);
+        an.y0 = [x0];
+        an.run = { t, y: [a] };
+        an.twin = { t, y: [b] };
+        an.sep = a.map((v, i) => Math.abs(v - b[i]));
+        an.rate = 5;
+        an.sepTimeUnit = 'step';
+        an.cycle = P.countCycle(P.logisticSettle(an.p.r, x0 || 0.2, 2000, 128), 1e-5);
+      },
+      scene(ctx, an, box, t) {
+        CHAOS_GRAPHS.cobweb(ctx, an, {}, { x0: box.x0 + 4, y0: box.y0 + 50, w: box.w - 8, h: box.h - 54 }, t, true);
+        sceneTitle(ctx, an, box);
+      },
+      live: () => ({ type: 'time', series: [{ idx: 0, label: 'x' }], dots: true, yRange: () => [0, 1], window: 40, xLabel: 'step n', yLabel: 'xₙ', title: 'xₙ against step n' }),
+      graphs: () => [
+        { id: 'cobweb', type: 'cobweb', label: 'Cobweb diagram', hint: 'Go up to the curve to get the next value, then across to the diagonal line to use it as the new input. A web that closes on one point or a box means a cycle; one that never closes means chaos.' },
+        { id: 'time', type: 'time', label: 'Value–step', series: [{ idx: 0, label: 'xₙ' }], dots: true, yRange: () => [0, 1], xLabel: 'step n', yLabel: 'xₙ', hint: 'Each dot is one step. Watch the twin (pink) start on top of it, then go its own way when r is large.' },
+        { id: 'sep', type: 'separation', label: 'Separation from the twin (log scale)', xLabel: 'step n', hint: 'The twin starts 0.000001 away. For chaotic r, the gap roughly doubles each step (a straight rising line) until it is as big as x itself.' },
+        { id: 'bif', type: 'bifurcation', label: 'Bifurcation diagram', hint: 'Across: growth rate r. Up: the values x settles onto. One branch splits into 2, then 4, 8, … and chaos by r ≈ 3.57, with windows of order (like the 3-cycle at r ≈ 3.83). Click to choose r.' },
+      ],
+      bif: {
+        from: 2.5,
+        to: 4,
+        cols: 600,
+        yRange: [0, 1],
+        xLabel: 'growth rate r',
+        yLabel: 'values x settles onto',
+        keyOf: () => [1],
+        column: (an, r) => ({ ys: P.logisticSettle(r, 0.2, 600, 120), carry: null }),
+        current: (an) => an.p.r,
+        set(c, v) {
+          c.logistic.r = Math.round(v * 1000) / 1000;
+        },
+      },
+      readouts: (an, y, t) => [{ label: 'Step n', value: String(idxAt(an, t)) }, { label: 'Value xₙ', value: fmt(y[0], 4) }],
+      mcq: (an) => [
+        {
+          key: 'chaos8',
+          q: 'With r = ' + fmt(an.p.r, 3) + ', what does the sequence settle into?',
+          options: ['A single value', 'Alternating between 2 values', 'A cycle of 4 values', 'Something else: a different cycle, or chaos that never repeats'],
+          correct: an.cycle === 1 ? 0 : an.cycle === 2 ? 1 : an.cycle === 4 ? 2 : 3,
+          why: an.cycle === 1 ? 'The web closes onto the point where the curve meets the diagonal: x* = 1 − 1/r.' : an.cycle === 2 || an.cycle === 4 ? 'The web settles onto a box that it goes around again and again.' : isFinite(an.cycle) ? 'It settles into a ' + an.cycle + '-cycle: one of the windows of order inside the chaotic range.' : 'It never repeats: chaos.',
+        },
+        {
+          key: 'chaos9',
+          q: 'The rule is one line of algebra with no randomness. What makes it chaotic for large r?',
+          options: ['Each step stretches small differences (the curve is steep) and then folds the values back into 0 to 1', 'Rounding errors in the calculator', 'The population is too large'],
+          correct: 0,
+          why: 'Stretching makes nearby starts separate; folding keeps everything between 0 and 1. Stretch-and-fold is the recipe for chaos in every system on this tab.',
+        },
+      ],
+      quantities(an, row) {
+        if (an.p.r > 1) row('xs', 'The fixed point x* = 1 − 1/r', '', 1 - 1 / an.p.r, 'solve x = r x (1 − x)');
+        row('x1', 'The value after one step, x₁', '', an.run.y[0][1], 'x₁ = r x₀ (1 − x₀)');
+      },
+      solution(an) {
+        const r = an.p.r;
+        return '<section><h3>1. The rule</h3><div class="eq">xₙ₊₁ = r xₙ (1 − xₙ)\nx₁ = ' + fmt(r, 3) + ' × ' + fmt(an.y0[0], 3) + ' × (1 − ' + fmt(an.y0[0], 3) + ') = ' + fmt(an.run.y[0][1], 4) + '</div><p>Small populations grow by the factor r; crowded ones are held back by (1 − x).</p></section>' +
+          '<section><h3>2. The fixed point</h3><p>A value that stays put satisfies x = r x (1 − x), so</p><div class="eq">x* = 1 − 1/r' + (r > 1 ? ' = ' + fmt(1 - 1 / r, 4) : '') + '</div><p>It attracts nearby values only when the curve’s slope there is gentle (between −1 and 1), which happens for 1 < r < 3. Above r = 3 the fixed point repels, and a 2-cycle takes over.</p></section>' +
+          '<section><h3>3. Period doubling to chaos</h3><p>As r increases the cycle doubles: 2 values at r = 3, 4 at r ≈ 3.449, 8 at r ≈ 3.544, … The doublings come faster and faster (each gap is about 4.669 times smaller: Feigenbaum’s number, the same for many systems, including the driven pendulum) and pile up at r ≈ 3.5699. Beyond that the sequence is chaotic, apart from windows such as the 3-cycle near r = 3.83.</p>' +
+          '<p>At r = ' + fmt(r, 3) + ' the sequence ' + (an.cycle === 1 ? 'settles to one value.' : isFinite(an.cycle) ? 'settles into a ' + an.cycle + '-cycle.' : 'never repeats: it is chaotic' + lyapText(an) + '. At r = 4, the exact value is λ = ln 2 ≈ 0.69 per step: errors double every step.') + '</p></section>';
+      },
+    },
+
+    magnet: {
+      label: 'Magnetic pendulum',
+      blurb: 'A pendulum with an iron bob, swinging over three magnets (seen from above). Which magnet will it end up over?',
+      bodies: ['Bob'],
+      ode: 'magnet',
+      T: 30,
+      dt: 0.002,
+      sample: 0.01,
+      twinText: 'a twin started 1 mm away',
+      fields: [
+        ['x', 'Starting x', 'm', -1.1, -2, 2, 0.01],
+        ['y', 'Starting y', 'm', 0.9, -2, 2, 0.01],
+        ['k', 'Pull back to the middle, k', '1/s²', 0.5, 0, 2, 0.05],
+        ['b', 'Friction b', '1/s', 0.2, 0.02, 1, 0.01],
+        ['s', 'Magnet strength', '', 1, 0, 3, 0.05],
+        ['d', 'Height of the bob above the magnets', 'm', 0.25, 0.05, 1, 0.01],
+      ],
+      note: 'The bob starts at rest. Gravity pulls it back toward the middle (like a spring, for small swings), friction slows it, and each magnet pulls it in. Magnets sit 1 m from the middle.',
+      presets: [['edge', 'Near a boundary', { x: -1.1, y: 0.9 }], ['calm', 'Near one magnet', { x: 1.6, y: -0.4 }]],
+      params: (s) => ({ k: s.k, b: s.b, s: s.s, d: s.d }),
+      y0: (s) => [s.x, 0, s.y, 0],
+      nudge: (y) => [y[0] + 0.001, y[1], y[2], y[3]],
+      sepOf: (a, b, i) => Math.hypot(a.y[0][i] - b.y[0][i], a.y[2][i] - b.y[2][i]),
+      sepUnit: 'm',
+      scene(ctx, an, box, t) {
+        const n = idxAt(an, t);
+        const side = Math.min(box.w - 20, box.h - 56);
+        const cx = box.x0 + box.w / 2;
+        const cy = box.y0 + 52 + side / 2;
+        const k = side / 2 / 2.1;
+        const S2 = (x, y) => [cx + x * k, cy - y * k];
+        ctx.save();
+        ctx.strokeStyle = C.grid;
+        ctx.strokeRect(cx - side / 2, cy - side / 2, side, side);
+        ctx.beginPath();
+        ctx.moveTo(cx - 6, cy);
+        ctx.lineTo(cx + 6, cy);
+        ctx.moveTo(cx, cy - 6);
+        ctx.lineTo(cx, cy + 6);
+        ctx.stroke();
+        MAGNET_POS.forEach((m, i) => {
+          const [px, py] = S2(m.x, m.y);
+          ctx.fillStyle = rgb(MAGNET_RGB[i]);
+          ctx.beginPath();
+          ctx.arc(px, py, 10, 0, 2 * Math.PI);
+          ctx.fill();
+          ctx.strokeStyle = C.ink;
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        });
+        const path = (run, color, alpha, width, from) => {
+          ctx.save();
+          ctx.strokeStyle = color;
+          ctx.globalAlpha = alpha;
+          ctx.lineWidth = width;
+          ctx.beginPath();
+          for (let i = from; i <= n; i++) {
+            const [px, py] = S2(run.y[0][i], run.y[2][i]);
+            i > from ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+          }
+          ctx.stroke();
+          ctx.restore();
+        };
+        const from = an.trail ? 0 : Math.max(0, n - 100);
+        if (an.twinOn) path(an.twin, C.l2, 0.7, 1.4, from);
+        path(an.run, C.accent, 0.95, 1.8, from);
+        MAGNET_POS.forEach((m, i) => {
+          const [px, py] = S2(m.x, m.y);
+          ctx.strokeStyle = rgb(MAGNET_RGB[i]);
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(px, py, 13, 0, 2 * Math.PI);
+          ctx.stroke();
+        });
+        if (an.twinOn) dotAt(ctx, ...S2(an.twin.y[0][n], an.twin.y[2][n]), C.l2, 6);
+        dotAt(ctx, ...S2(an.run.y[0][n], an.run.y[2][n]), C.accent, 8);
+        ctx.restore();
+        sceneTitle(ctx, an, box);
+        if (tRun(an, t) >= an.run.t[an.run.t.length - 1] - 0.05) {
+          const txt = 'Ends over the ' + MAGNET_NAMES[an.end[0]] + ' magnet' + (an.twinOn ? an.end[0] === an.end[1] ? ' (the twin too)' : '; the twin ends over the ' + MAGNET_NAMES[an.end[1]] : '');
+          labelText(ctx, txt, box.x0 + 12, box.y0 + box.h - 10, C.ink, 'left', 13, 600, C.fontBody);
+        }
+      },
+      live: () => ({ type: 'time', series: [{ idx: 0, label: 'x' }, { idx: 2, label: 'y', color: 'f-n' }], yRange: () => [-2.1, 2.1], yLabel: 'position (m)', title: 'x and y against time' }),
+      graphs: () => [
+        { id: 'path', type: 'portrait', label: 'Path from above (x vs y)', pair: [0, 2], xLabel: 'x (m)', yLabel: 'y (m)', fixed: [[-2.1, 2.1], [-2.1, 2.1]], hint: 'The path seen from above. It darts between the magnets before friction lets one capture it.' },
+        { id: 'time', type: 'time', label: 'Position–time', series: [{ idx: 0, label: 'x' }, { idx: 2, label: 'y', color: 'f-n' }], yLabel: 'position (m)', hint: 'x and y against time. Watch the twin follow, then possibly split off toward a different magnet.' },
+        { id: 'sep', type: 'separation', label: 'Separation from the twin (log scale)', hint: 'The distance between the bob and its twin. If they end over the same magnet, the gap shrinks again at the end.' },
+        { id: 'map', type: 'map', label: 'Basin map (which magnet wins)', hint: 'Each pixel is a starting point. Its color is the magnet the bob ends up over (darker: takes longer). The striped, swirly boundaries are fractal. Click a pixel to start from there.' },
+      ],
+      map: {
+        n: 100,
+        xr: [-2, 2],
+        yr: [-2, 2],
+        ticks: [-2, -1, 0, 1, 2].map((v) => [v, String(v).replace('-', '−')]),
+        xLabel: 'starting x (m)',
+        yLabel: 'starting y (m)',
+        keyOf: (an) => [an.p.k, an.p.b, an.p.s, an.p.d],
+        cell: (an, x, y) => P.magnetSettle(an.p, x, y, 40),
+        color: (an, r) => MAGNET_RGB[r.magnet].map((v) => Math.round(v * (1 - 0.55 * Math.min(1, r.t / 25)))),
+        current: (an) => [an.y0[0], an.y0[2]],
+        set(c, x, y) {
+          c.magnet.x = Math.round(x * 100) / 100;
+          c.magnet.y = Math.round(y * 100) / 100;
+        },
+        legend: () => MAGNET_RGB.map((c2, i) => [rgb(c2), MAGNET_NAMES[i] + ' magnet']),
+      },
+      readouts: (an, y) => [{ label: 'Position (x, y)', value: fmt(y[0]) + ', ' + fmt(y[2]) + ' m' }, { label: 'Speed', value: fmt(Math.hypot(y[1], y[3])) + ' m/s' }],
+      extra(an) {
+        an.end = [P.magnetSettle(an.p, an.y0[0], an.y0[2], 60).magnet, P.magnetSettle(an.p, an.y0[0] + 0.001, an.y0[2], 60).magnet];
+      },
+      mcq: (an) => [
+        {
+          key: 'chaos10',
+          q: 'The twin starts just 1 mm away. Do the two bobs end up over the same magnet?',
+          options: ['Yes, the same magnet', 'No, different magnets'],
+          correct: an.end[0] === an.end[1] ? 0 : 1,
+          why: an.end[0] === an.end[1] ? 'Here both end over the ' + MAGNET_NAMES[an.end[0]] + ' magnet: this start is inside a smooth patch of the basin map.' : 'Here they split: one ends over the ' + MAGNET_NAMES[an.end[0]] + ' magnet, the other over the ' + MAGNET_NAMES[an.end[1]] + '. This start is on a fractal boundary of the basin map.',
+        },
+        {
+          key: 'chaos11',
+          q: 'Friction always stops the bob eventually. In what sense is the magnetic pendulum chaotic?',
+          options: ['Before it settles, its path is so sensitive that you can’t predict which magnet will capture it, starting near a basin boundary', 'It never stops moving', 'The magnets switch on and off'],
+          correct: 0,
+          why: 'This is “transient chaos”: the end is always a magnet, but which one depends sensitively on the start. The basin map shows fractal boundaries where the colors interleave at every scale.',
+        },
+      ],
+      quantities(an, row) {
+        const r0 = Math.hypot(an.y0[0], an.y0[2]);
+        row('Tk', 'Period of a swing with the magnets removed, 2π/√k', 's', an.p.k > 0 ? (2 * Math.PI) / Math.sqrt(an.p.k) : 0);
+        row('ak', 'Pull toward the middle at the start (per kg), k r₀', 'm/s²', an.p.k * r0, 'r₀ is the starting distance from the middle');
+      },
+      solution(an) {
+        const p = an.p;
+        return '<section><h3>1. Forces on the bob</h3><p>Seen from above, three horizontal forces (per kilogram) act on the bob:</p>' +
+          '<div class="eq">a = −k r  (gravity pulling back to the middle, like a spring for small swings)\n    − b v  (friction)\n    + Σ s (rₘ − r) / (|rₘ − r|² + d²)^(3/2)  (each magnet pulls toward itself)</div>' +
+          '<p>Here k = ' + fmt(p.k) + ' /s², b = ' + fmt(p.b) + ' /s, s = ' + fmt(p.s) + ', d = ' + fmt(p.d) + ' m. Newton’s second law gives two coupled equations for x and y, solved step by step with 4th-order Runge–Kutta.</p></section>' +
+          '<section><h3>2. Where it ends</h3><p>Friction drains energy until the bob is trapped over one magnet. Starting at (' + fmt(an.y0[0]) + ', ' + fmt(an.y0[2]) + ') m it ends over the ' + MAGNET_NAMES[an.end[0]] + ' magnet' + (an.end[0] === an.end[1] ? ', and so does the twin started 1 mm away.' : ', while the twin started 1 mm away ends over the ' + MAGNET_NAMES[an.end[1]] + ' magnet.') + '</p></section>' +
+          '<section><h3>3. Fractal basins</h3><p>Coloring every starting point by its final magnet gives the basin map. Near each magnet the color is solid. Elsewhere the three colors interleave in thinner and thinner stripes: zoom in on a boundary and you always find all three colors. A tiny error in the start can change the outcome, even though the motion follows Newton’s laws exactly.</p></section>';
+      },
+    },
+
+    bounce: {
+      label: 'Bouncing ball on a vibrating plate',
+      blurb: 'A ball bouncing on a plate that shakes up and down. Shake harder to go from steady bouncing to period doubling to chaos.',
+      bodies: ['Ball'],
+      twinText: 'a twin started 0.001 mm higher',
+      fields: [
+        ['A', 'Shaking amplitude A', 'mm', 1.1, 0.1, 5, 0.01],
+        ['f', 'Shaking frequency f', 'Hz', 20, 5, 60, 1],
+        ['e', 'Bounciness (restitution) e', '', 0.5, 0, 0.95, 0.01],
+      ],
+      note: 'The plate moves as A sin(2πft). In each bounce the ball’s speed relative to the plate is reversed and multiplied by e. The ball starts on the steady one-bounce-per-shake motion when there is one.',
+      presets: [['p1', 'Steady (A = 0.80 mm)', { A: 0.8, f: 20, e: 0.5 }], ['p2', 'Period 2 (A = 1.00 mm)', { A: 1, f: 20, e: 0.5 }], ['ch', 'Chaos (A = 1.10 mm)', { A: 1.1, f: 20, e: 0.5 }]],
+      params: (s) => ({ A: s.A / 1000, f: s.f, e: s.e, g: G_() }),
+      sepUnit: 'mm',
+      simulate(an) {
+        const p = an.p;
+        const T = 8;
+        const st = bounceStart(p);
+        const st2 = { ...st, y: st.y + 1e-6 };
+        const r1 = P.bounceSim(p, T, st, 20000);
+        const r2 = P.bounceSim(p, T, st2, 20000);
+        an.y0 = [st.y, st.v];
+        an.run = sampleBounce(r1, p, T, 0.001);
+        an.twin = sampleBounce(r2, p, T, 0.001);
+        const w = 2 * Math.PI * p.f;
+        const n = an.run.t.length;
+        an.sep = new Float64Array(n);
+        for (let i = 0; i < n; i++) an.sep[i] = Math.hypot(an.run.y[0][i] - an.twin.y[0][i], ((an.run.y[2][i] - an.twin.y[2][i]) / w) * 1000);
+        an.Gam = r1.Gam;
+        an.impacts = r1.impacts;
+        let hmax = 0;
+        for (let i = 0; i < n; i++) hmax = Math.max(hmax, an.run.y[0][i], an.twin.y[0][i]);
+        an.hmax = hmax;
+        const longer = P.bounceSim(p, st.t + 200 / p.f, st, 40000);
+        const last = longer.impacts.filter((i) => i.vrel > 0.15 * p.A * w).slice(-40);
+        an.cycle = longer.Gam <= 1 ? 0 : P.countCycle(last.map((i) => i.phase), 0.01);
+      },
+      scene(ctx, an, box, t) {
+        const i = idxAt(an, t);
+        const yb = an.run.y[0][i];
+        const yp = an.run.y[1][i];
+        const top = an.hmax + 1;
+        const bot = -an.p.A * 1000 - 3;
+        const y0p = box.y0 + 60;
+        const y1p = box.y0 + box.h - 40;
+        const Y = (mm) => y1p - ((mm - bot) / (top - bot)) * (y1p - y0p);
+        const cx = box.x0 + box.w / 2;
+        const pw = Math.min(220, box.w * 0.6);
+        // ruler
+        ctx.save();
+        ctx.strokeStyle = C.grid;
+        ctx.fillStyle = C.muted;
+        ctx.font = '11px ' + C.fontMono;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        const st = niceStep(top - bot, 6);
+        for (let v = Math.ceil(bot / st) * st; v <= top; v += st) {
+          ctx.beginPath();
+          ctx.moveTo(box.x0 + 50, Math.round(Y(v)) + 0.5);
+          ctx.lineTo(box.x0 + 58, Math.round(Y(v)) + 0.5);
+          ctx.stroke();
+          ctx.fillText(fmt(v, st < 1 ? 1 : 0), box.x0 + 46, Y(v));
+        }
+        ctx.save();
+        ctx.translate(box.x0 + 12, (y0p + y1p) / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.textAlign = 'center';
+        ctx.fillText('height (mm)', 0, 0);
+        ctx.restore();
+        // shaker below the plate
+        ctx.fillStyle = C['bench-edge'];
+        ctx.fillRect(cx - 14, Y(yp) + 6, 28, y1p + 30 - Y(yp));
+        ctx.fillStyle = C.bench;
+        ctx.fillRect(cx - pw / 2 - 10, y1p + 22, pw + 20, 14);
+        // plate
+        ctx.fillStyle = C.muted;
+        ctx.fillRect(cx - pw / 2, Y(yp), pw, 7);
+        // balls (bottom of the ball at its height)
+        const r = 9;
+        if (an.twinOn) {
+          const ybt = an.twin.y[0][i];
+          ctx.globalAlpha = 0.7;
+          ctx.fillStyle = C.l2;
+          ctx.beginPath();
+          ctx.arc(cx + 30, Y(ybt) - r, r, 0, 2 * Math.PI);
+          ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+        ctx.fillStyle = bodyColor(0);
+        ctx.strokeStyle = C.ink;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(cx - (an.twinOn ? 30 : 0), Y(yb) - r, r, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        sceneTitle(ctx, an, box);
+        if (box.w >= 480) labelText(ctx, 'Γ = Aω²/g = ' + fmt(an.Gam, 2), box.x0 + box.w - 12, box.y0 + 18, C.ink, 'right', 13, 600, C.fontBody);
+        else labelText(ctx, 'Γ = Aω²/g = ' + fmt(an.Gam, 2), box.x0 + box.w - 12, box.y0 + 62, C.ink, 'right', 13, 600, C.fontBody);
+      },
+      live: () => ({ type: 'time', series: [{ idx: 0, label: 'ball' }, { idx: 1, label: 'plate', color: 'muted', twin: false }], window: 0.6, yLabel: 'height (mm)', title: 'Heights against time (last 0.6 s)' }),
+      graphs: () => [
+        { id: 'time', type: 'time', label: 'Height–time', series: [{ idx: 0, label: 'ball' }, { idx: 1, label: 'plate', color: 'muted', twin: false }], window: 1, yLabel: 'height (mm)', hint: 'The ball’s height and the plate’s height over the last second. Steady bouncing repeats with every shake; period 2 alternates a high and a low bounce; chaos never repeats.' },
+        { id: 'sep', type: 'separation', label: 'Separation from the twin (log scale)', hint: 'The difference in height and speed between the ball and its twin. Exponential growth means chaos; with steady bouncing the gap shrinks.' },
+        { id: 'poin', type: 'poincare', label: 'Poincaré section (bounces)', hint: 'One dot per bounce (after a start-up): where in the shake it hit (across) and how hard (up). A few dots: periodic bouncing. A spread-out curve: chaos.' },
+        { id: 'bif', type: 'bifurcation', label: 'Bifurcation diagram', hint: 'Across: shaking strength Γ = Aω²/g. Up: impact speeds once the bouncing has settled (tiny chattering bounces left out). One branch splits into two, then into chaos. Below Γ = 1 the ball can’t leave the plate. Click to choose Γ.' },
+        { id: 'spec', type: 'spectrum', label: 'Frequency spectrum', fmax: (an) => 3 * an.p.f, hint: 'Steady bouncing: peaks at the shaking frequency and its multiples. Period 2 adds a peak at half the shaking frequency. Chaos fills in between.' },
+      ],
+      spectrumSeries: (an) => ({ vals: an.run.y[0].subarray(2000), dt: 0.001, unit: 'Hz', what: 'the ball’s height after the first 2 s' }),
+      poincare(an) {
+        const st = bounceStart(an.p);
+        const r = P.bounceSim(an.p, st.t + 1200 / an.p.f, st, 60000);
+        const pts = r.impacts.slice(Math.min(200, Math.floor(r.impacts.length / 4))).map((i) => [i.phase, i.vrel]);
+        return { pts, xRange: [0, 2 * Math.PI], xTicks: [[0, '0'], [Math.PI / 2, 'π/2'], [Math.PI, 'π'], [1.5 * Math.PI, '3π/2'], [2 * Math.PI, '2π']], xLabel: 'phase of the shake at the bounce (rad)', yLabel: 'impact speed (m/s)', note: 'Each dot is one bounce.' };
+      },
+      bif: {
+        from: 1,
+        to: 3,
+        cols: 240,
+        xLabel: 'shaking strength Γ = Aω²/g',
+        yLabel: 'impact speed (m/s)',
+        keyOf: (an) => [an.p.f, an.p.e, an.p.g],
+        column(an, G, carry) {
+          const w = 2 * Math.PI * an.p.f;
+          const p = { ...an.p, A: (G * an.p.g) / (w * w) };
+          // start on the one-bounce orbit until it stops being stable, then carry on from the last state
+          const st = !carry || carry.p1 ? bounceStart(p) : carry.s;
+          const r = P.bounceSim(p, st.t + 160 / p.f, st, 20000);
+          const cut = st.t + 120 / p.f;
+          const im = r.impacts.filter((i) => i.t > cut && i.vrel > 0.15 * p.A * w).slice(0, 80);
+          return { ys: im.map((i) => i.vrel), carry: { s: { t: r.end.t, y: r.end.y, v: r.end.v }, p1: P.countCycle(im.map((i) => i.phase), 0.01) === 1 } };
+        },
+        current: (an) => an.Gam,
+        set(c, G) {
+          const w = 2 * Math.PI * c.bounce.f;
+          c.bounce.A = Math.round(((G * state.g) / (w * w)) * 1e5) / 100;
+        },
+      },
+      readouts: (an, y) => [{ label: 'Ball height', value: fmt(y[0], 2) + ' mm' }, { label: 'Plate height', value: fmt(y[1], 2) + ' mm' }],
+      mcq: (an) => [
+        {
+          key: 'chaos12',
+          q: 'With Γ = ' + fmt(an.Gam, 2) + ', once it settles, how does the ball bounce?',
+          options: ['It can’t leave the plate', 'One identical bounce every shake (period 1)', 'Alternating high and low bounces (period 2)', 'Irregularly: chaotic (or a long, complicated cycle)'],
+          correct: an.cycle === 0 ? 0 : an.cycle === 1 ? 1 : an.cycle === 2 ? 2 : 3,
+          why: an.cycle === 0 ? 'With Γ < 1 the plate never accelerates downward faster than g, so the ball rides along with it.' : 'Check the Poincaré section: ' + (an.cycle === 1 ? 'every bounce lands on one dot.' : an.cycle === 2 ? 'the bounces alternate between two dots.' : 'the dots never settle onto a few points.'),
+        },
+        {
+          key: 'chaos13',
+          q: 'What does Γ = Aω²/g compare?',
+          options: ['The plate’s largest acceleration with g', 'The plate’s speed with the ball’s speed', 'The ball’s mass with the plate’s mass'],
+          correct: 0,
+          why: 'The plate’s acceleration is −Aω² sin(ωt), so its largest value is Aω². The ball can only leave the plate if the plate accelerates downward faster than g, which needs Γ > 1.',
+        },
+      ],
+      quantities(an, row) {
+        const w = 2 * Math.PI * an.p.f;
+        row('Gam', 'Shaking strength Γ = Aω²/g', '', an.Gam, 'ω = 2πf; use A in meters');
+        row('vp', 'The plate’s top speed, Aω', 'm/s', an.p.A * w);
+      },
+      solution(an) {
+        const p = an.p;
+        const w = 2 * Math.PI * p.f;
+        return '<section><h3>1. Between bounces</h3><p>In the air the only force is gravity, so the ball is a projectile: y = y₀ + v₀t − ½gt². The plate moves as A sin(ωt) with ω = 2πf = ' + fmt(w, 1) + ' rad/s.</p></section>' +
+          '<section><h3>2. The bounce</h3><p>When the ball meets the plate, its speed relative to the plate is reversed and multiplied by e:</p><div class="eq">v_after − v_plate = −e (v_before − v_plate)</div><p>So a bounce off a rising plate sends the ball up faster. The computer finds each meeting time exactly, then applies this rule.</p></section>' +
+          '<section><h3>3. Shaking strength</h3><div class="eq">Γ = Aω²/g = ' + fmt(p.A, 5) + ' × ' + fmt(w, 1) + '² / ' + fmt(an.g) + ' = ' + fmt(an.Gam, 2) + '</div><p>For Γ < 1 the plate never pulls away from the ball faster than gravity, so the ball can’t leave. Just above 1 it settles into one bounce per shake; past Γ ≈ 1.5 (for e = 0.5) the bounces alternate high-low (period 2), and soon after they become chaotic.</p></section>' +
+          '<section><h3>4. Why chaos?</h3><p>A slightly harder bounce flies a little longer, so it lands at a different point in the shake, where the plate is moving at a different speed. That changes the next bounce even more: small differences are stretched, bounce after bounce. Here the bouncing ' + (an.cycle === 0 ? 'can’t start (Γ < 1).' : an.cycle === 1 ? 'repeats every shake.' : an.cycle === 2 ? 'repeats every two bounces.' : 'never settles into a short repeating pattern' + lyapText(an) + '.') + '</p></section>';
       },
     },
   };
+  const lyapText = (an) => (an.lyap && an.lyap.ok ? ' (in this run, at a rate λ ≈ ' + fmt(an.lyap.slope, 2) + ' per ' + (an.sepTimeUnit || 's') + ')' : '');
+
+  const sysDefaults = (S) => Object.fromEntries(S.fields.map((f) => [f[0], f[3]]));
+  const CHAOS_ORDER = ['single', 'double', 'driven', 'lorenz', 'logistic', 'magnet', 'bounce'];
+  const chaosGraphs = (an) => CHAOS_SYSTEMS[an.sys].graphs(an);
+  function chaosGraph(an) {
+    const list = chaosGraphs(an);
+    ui.chaosGraph = ui.chaosGraph || {};
+    return list.find((g) => g.id === ui.chaosGraph[an.sys]) || list[0];
+  }
   const CHAOS = {
-    defaults: () => ({ sys: 'double', twin: true, trail: true, single: CHAOS_SYSTEMS.single.defaults(), double: CHAOS_SYSTEMS.double.defaults(), mystery: { on: false, target: '' } }),
-    system: (an) => CHAOS_SYSTEMS[an.sys],
+    defaults() {
+      const d = { sys: 'double', twin: true, trail: true, mystery: { on: false, target: '' } };
+      CHAOS_ORDER.forEach((k) => (d[k] = sysDefaults(CHAOS_SYSTEMS[k])));
+      return d;
+    },
     solve(c) {
       const S = CHAOS_SYSTEMS[c.sys];
-      const p = S.params(c);
-      const y0 = S.y0(c);
-      const key = JSON.stringify([c.sys, p, y0]);
-      if (!ui.chaosCache || ui.chaosCache.key !== key) {
-        const run = P.simulatePendulum(c.sys, p, y0, CHAOS_T, 0.001, 0.01);
-        const twin = P.simulatePendulum(c.sys, p, S.nudge(y0), CHAOS_T, 0.001, 0.01);
-        // how far apart the twin is after 20 s (the last bob's angle)
-        const i20 = Math.round(20 / run.dtSample);
-        const ai = S.angleIdx[S.angleIdx.length - 1];
-        const sep20 = Math.abs(wrapPi(run.y[ai][i20] - twin.y[ai][i20]));
-        // fixed axis limits for the phase portraits
-        const wmax = S.omegaIdx.map((oi) => {
-          let m = 0;
-          for (const arr of [run.y[oi], twin.y[oi]]) for (let i = 0; i < arr.length; i++) m = Math.max(m, Math.abs(arr[i]));
-          return Math.max(0.5, m * 1.1);
-        });
-        // angle range: zoom in when the bob never goes near the top
-        const thmax = S.angleIdx.map((ai) => {
-          let m = 0;
-          for (const arr of [run.y[ai], twin.y[ai]]) for (let i = 0; i < arr.length; i++) m = Math.max(m, Math.abs(wrapPi(arr[i])));
-          return m < 2.6 ? Math.max(0.05, m * 1.15) : Math.PI;
-        });
-        ui.chaosCache = { key, run, twin, sep20, wmax, thmax };
+      const s = c[c.sys];
+      const p = S.params(s);
+      const key = c.sys + ':' + JSON.stringify(s) + ':' + JSON.stringify(p);
+      if (!ui.chaosRun || ui.chaosRun.key !== key) {
+        const r = { key, sys: c.sys, s: { ...s }, p, rate: 1 };
+        if (S.simulate) S.simulate(r);
+        else odeSimulate(r, S);
+        if (S.extra) S.extra(r);
+        r.sepTimeUnit = r.sepTimeUnit || (c.sys === 'lorenz' ? 'time unit' : 's');
+        r.sepUnit = r.sepUnit || S.sepUnit;
+        r.lyap = fitLyapunov(r.run.t, r.sep, c.sys === 'logistic' ? 3 : c.sys === 'bounce' ? 0.2 : 2);
+        const i20 = Math.min(r.sep.length - 1, Math.round(20 / (r.run.t[1] - r.run.t[0])));
+        r.sep20 = r.sep[i20];
+        if (P.PENDULUMS[c.sys] && P.PENDULUMS[c.sys].energy) r.E0 = P.PENDULUMS[c.sys].energy(p, r.y0);
+        ui.chaosRun = r;
+        for (const k in chaosCache) delete chaosCache[k];
       }
-      const cc = ui.chaosCache;
-      const an = { kind: 'chaos', ok: true, sys: c.sys, p, y0, g: state.g, twinOn: c.twin, trail: c.trail, ...cc };
+      const an = { kind: 'chaos', ok: true, g: state.g, twinOn: c.twin, trail: c.trail, ...ui.chaosRun };
       an.bodies = S.bodies.map((name) => ({ name, m: 1, kind: 'hanging', a: 0 }));
       an.atRest = false;
-      an.E0 = P.PENDULUMS[c.sys].energy(p, y0);
       return an;
     },
     controls(c) {
       const S = CHAOS_SYSTEMS[c.sys];
-      let h = '<div class="group"><h2>System</h2>' + selectField('Choose a system', 'sel-chaos-sys', 'sys', Object.keys(CHAOS_SYSTEMS).map((k) => [k, CHAOS_SYSTEMS[k].label]), c.sys, true) +
-        '<div class="btn-row"><button type="button" class="btn btn-small" data-action="chaospreset" data-preset="small">Small swings</button><button type="button" class="btn btn-small" data-action="chaospreset" data-preset="big">Big swings</button></div></div>';
-      h += '<div class="group"><h2>' + S.label + '</h2>' + S.controls(c) + '</div>';
-      h += '<div class="group"><h2>Show</h2>' + checkField('A twin started ' + TWIN_D + '° away (faint)', 'twin', c.twin) + checkField('A trail behind the ' + (c.sys === 'single' ? 'bob' : 'lower bob'), 'trail', c.trail) +
-        '<p class="note">The computer follows the motion for ' + CHAOS_T + ' s. Slow it down with the Speed menu.</p></div>';
+      const s = c[c.sys];
+      let h = '<div class="group"><h2>System</h2>' + selectField('Choose a system', 'sel-chaos-sys', 'sys', CHAOS_ORDER.map((k) => [k, CHAOS_SYSTEMS[k].label]), c.sys, true) +
+        '<p class="note">' + S.blurb + '</p>' +
+        '<div class="btn-row">' + S.presets.map(([id, label]) => '<button type="button" class="btn btn-small" data-action="chaospreset" data-preset="' + id + '">' + label + '</button>').join('') + '</div></div>';
+      h += '<div class="group"><h2>' + S.label + '</h2>' + S.fields.map(([k, label, unit, , min, max, step]) => numField(label, c.sys + '.' + k, s[k], unit, { min, max, step })).join('') +
+        '<p class="note">' + S.note + '</p></div>';
+      const trailWord = c.sys === 'double' ? 'A trail behind the lower bob' : c.sys === 'magnet' ? 'Keep the whole path' : c.sys === 'lorenz' ? 'Highlight the latest part of the path' : 'A trail behind the bob';
+      h += '<div class="group"><h2>Show</h2>' + checkField('A twin (pink): ' + S.twinText, 'twin', c.twin) +
+        (c.sys === 'logistic' || c.sys === 'bounce' ? '' : checkField(trailWord, 'trail', c.trail)) +
+        '<p class="note">More graphs (Poincaré sections, bifurcation diagrams, fractal maps) are under <b>Chaos graphs</b> below the animation. Slow the animation with the Speed menu.</p></div>';
       return h;
     },
     preset(c, which) {
-      Object.assign(c[c.sys], CHAOS_SYSTEMS[c.sys].presets[which]);
+      const pr = CHAOS_SYSTEMS[c.sys].presets.find((x) => x[0] === which);
+      if (pr) Object.assign(c[c.sys], pr[2]);
     },
     randomize(c, r) {
-      if (c.sys === 'single') Object.assign(c.single, { L: r(0.5, 2, 0.1), th: r(-170, 170, 5) });
-      else Object.assign(c.double, { th1: r(-170, 170, 5), th2: r(-170, 170, 5), m1: r(0.5, 3, 0.5), m2: r(0.5, 3, 0.5) });
+      const S = CHAOS_SYSTEMS[c.sys];
+      const pr = S.presets[Math.floor(Math.random() * S.presets.length)];
+      Object.assign(c[c.sys], pr[2]);
+      if (c.sys === 'single') c.single.th = r(-170, 170, 5);
+      if (c.sys === 'double') Object.assign(c.double, { th1: r(-170, 170, 5), th2: r(-170, 170, 5) });
+      if (c.sys === 'magnet') Object.assign(c.magnet, { x: r(-1.9, 1.9, 0.01), y: r(-1.9, 1.9, 0.01) });
+      if (c.sys === 'logistic') c.logistic.x0 = r(0.05, 0.95, 0.01);
     },
     load(c, num) {
       const d = CHAOS.defaults();
-      const s = c.single || {};
-      const dd = c.double || {};
-      return {
-        sys: CHAOS_SYSTEMS[c.sys] ? c.sys : d.sys,
-        twin: c.twin !== false,
-        trail: c.trail !== false,
-        single: { L: num(s.L, 1, 0.1, 5), th: num(s.th, 60, -179, 179), w: num(s.w, 0, -20, 20), b: num(s.b, 0, 0, 2) },
-        double: {
-          m1: num(dd.m1, 1, 0.1, 10),
-          m2: num(dd.m2, 1, 0.1, 10),
-          L1: num(dd.L1, 1, 0.1, 3),
-          L2: num(dd.L2, 1, 0.1, 3),
-          th1: num(dd.th1, 120, -179, 179),
-          th2: num(dd.th2, -30, -179, 179),
-        },
-        mystery: d.mystery,
-      };
+      const out = { sys: CHAOS_SYSTEMS[c.sys] ? c.sys : d.sys, twin: c.twin !== false, trail: c.trail !== false, mystery: d.mystery };
+      CHAOS_ORDER.forEach((k) => {
+        const src = c[k] || {};
+        out[k] = Object.fromEntries(CHAOS_SYSTEMS[k].fields.map(([f, , , def, min, max]) => [f, num(src[f], def, min, max)]));
+      });
+      return out;
     },
-    buildSim: () => ({ kind: 'chaos', tStop: CHAOS_T, reason: 'End of the ' + CHAOS_T + ' s run' }),
-    // the state at time t, interpolated between saved samples
-    at(run, t) {
-      const f = Math.min(t / (run.t[1] - run.t[0]), run.t.length - 1);
-      const i = Math.floor(f);
-      const j = Math.min(i + 1, run.t.length - 1);
-      const u = f - i;
-      return run.y.map((a) => a[i] + (a[j] - a[i]) * u);
+    buildSim: (an) => {
+      const T = (an.run.t[an.run.t.length - 1]) / (an.rate || 1);
+      return { kind: 'chaos', tStop: T, reason: 'End of the ' + fmt(T, 0) + ' s run' };
     },
-    motion(an, t) {
-      const S = CHAOS.system(an);
-      const y = CHAOS.at(an.run, t);
-      const b = Math.min(ui.track, S.angleIdx.length - 1);
-      return { s: y[S.angleIdx[b]], v: y[S.omegaIdx[b]], a: 0 };
-    },
+    motion: () => ({ s: 0, v: 0, a: 0 }),
     readouts(an, t) {
-      const S = CHAOS.system(an);
-      const y = CHAOS.at(an.run, t);
-      const b = Math.min(ui.track, S.angleIdx.length - 1);
-      const sub2 = S.angleIdx.length > 1 ? sub(b + 1) : '';
-      return [
-        { label: 'Angle θ' + sub2, value: fmt(wrapPi(y[S.angleIdx[b]]) / DEG, 1) + '°' },
-        { label: 'Angular velocity ω' + sub2, value: fmt(y[S.omegaIdx[b]]) + ' rad/s' },
-      ];
+      const S = CHAOS_SYSTEMS[an.sys];
+      return S.readouts(an, sampleAt(an.run, tRun(an, t), S.discrete), t);
     },
     noFbd: (an) => an.sys !== 'single',
     liveFbd: true,
-    graphNames: () => (cur().sys === 'single' ? { x: 'Phase portrait', v: '', a: 'Angle–time' } : { x: 'Phase portrait: upper bob', v: 'Phase portrait: lower bob', a: 'Angle–time' }),
+    graphNames: { x: 'x', v: '', a: '' },
     graphValue: () => 0,
     graphLabel: { x: '', v: '', a: '' },
-    // a phase portrait (theta vs omega) in the box x0, y0, w, h, up to time tNow
-    portrait(ctx, an, b, tNow, x0, y0, w, h, small) {
-      const S = CHAOS.system(an);
-      const ai = S.angleIdx[b];
-      const oi = S.omegaIdx[b];
-      const wmax = an.wmax[b];
-      const tmax = an.thmax[b];
-      const L = small ? 48 : 64;
-      const R = 10;
-      const T = small ? 26 : 16;
-      const B = small ? 28 : 40;
-      const X = (th) => x0 + L + ((w - L - R) * (th + tmax)) / (2 * tmax);
-      const Y = (om) => y0 + T + ((h - T - B) * (wmax - om)) / (2 * wmax);
-      ctx.save();
-      ctx.fillStyle = C.scene;
-      ctx.fillRect(x0, y0, w, h);
-      ctx.strokeStyle = C.grid;
-      ctx.lineWidth = 1;
-      ctx.font = (small ? 11 : 13) + 'px ' + C.fontMono;
-      ctx.fillStyle = C.muted;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      const xt = tmax >= Math.PI - 1e-9
-        ? [[-Math.PI, '−π'], [-Math.PI / 2, '−π/2'], [0, '0'], [Math.PI / 2, 'π/2'], [Math.PI, 'π']]
-        : (() => {
-            const st = niceStep(2 * tmax, small ? 4 : 6);
-            const out = [];
-            for (let v = Math.ceil(-tmax / st) * st; v <= tmax + 1e-9; v += st) out.push([v, fmt(v, st < 0.1 ? 2 : 1)]);
-            return out;
-          })();
-      xt.forEach(([v, txt]) => {
-        ctx.beginPath();
-        ctx.moveTo(Math.round(X(v)) + 0.5, y0 + T);
-        ctx.lineTo(Math.round(X(v)) + 0.5, y0 + h - B);
-        ctx.stroke();
-        ctx.fillText(txt, X(v), y0 + h - B + 5);
-      });
-      const ys = niceStep(2 * wmax, small ? 4 : 6);
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'middle';
-      for (let v = Math.ceil(-wmax / ys) * ys; v <= wmax + 1e-9; v += ys) {
-        ctx.beginPath();
-        ctx.moveTo(x0 + L, Math.round(Y(v)) + 0.5);
-        ctx.lineTo(x0 + w - R, Math.round(Y(v)) + 0.5);
-        ctx.stroke();
-        ctx.fillText(fmt(v, ys < 1 ? 1 : 0), x0 + L - 5, Y(v));
-      }
-      ctx.strokeStyle = C.muted;
-      ctx.beginPath();
-      ctx.moveTo(X(0), y0 + T);
-      ctx.lineTo(X(0), y0 + h - B);
-      ctx.moveTo(x0 + L, Y(0));
-      ctx.lineTo(x0 + w - R, Y(0));
-      ctx.stroke();
-      ctx.fillStyle = C.ink;
-      ctx.font = '600 ' + (small ? 12 : 14) + 'px ' + C.fontBody;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText('angle θ' + (S.angleIdx.length > 1 ? sub(b + 1) : '') + ' (rad)', x0 + L + (w - L - R) / 2, y0 + h - 2);
-      ctx.save();
-      ctx.translate(x0 + (small ? 10 : 14), y0 + T + (h - T - B) / 2);
-      ctx.rotate(-Math.PI / 2);
-      ctx.textBaseline = 'middle';
-      ctx.fillText('ω' + (S.angleIdx.length > 1 ? sub(b + 1) : '') + ' (rad/s)', 0, 0);
-      ctx.restore();
-      if (small) {
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'top';
-        ctx.fillText('Phase portrait' + (S.angleIdx.length > 1 ? ', ' + S.bodies[b].toLowerCase() : ''), x0 + 8, y0 + 6);
-      }
-      // the paths: the twin first (faint), then the main run
-      const n = Math.min(Math.floor(tNow / (an.run.t[1] - an.run.t[0])), an.run.t.length - 1);
-      const path = (run, color, width, alpha) => {
-        const A = run.y[ai];
-        const Om = run.y[oi];
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(x0 + L, y0 + T, w - L - R, h - T - B);
-        ctx.clip();
-        ctx.strokeStyle = color;
-        ctx.globalAlpha = alpha;
-        ctx.lineWidth = width;
-        ctx.lineJoin = 'round';
-        ctx.beginPath();
-        let prev = null;
-        for (let i = 0; i <= n; i++) {
-          const th = wrapPi(A[i]);
-          const px = X(th);
-          const py = Y(Om[i]);
-          if (prev === null || Math.abs(th - prev) > Math.PI) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-          prev = th;
-        }
-        ctx.stroke();
-        ctx.restore();
-        return [X(wrapPi(A[n])), Y(Om[n])];
-      };
-      if (an.twinOn) {
-        const [tx, ty] = path(an.twin, C.l2, 1.3, 0.6);
-        ctx.fillStyle = C.l2;
-        ctx.beginPath();
-        ctx.arc(tx, ty, 4, 0, 2 * Math.PI);
-        ctx.fill();
-      }
-      const [mx, my] = path(an.run, C.accent, small ? 1.4 : 1.8, 0.95);
-      ctx.fillStyle = C.accent;
-      ctx.strokeStyle = C.scene;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(mx, my, 5, 0, 2 * Math.PI);
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
-    },
     draw(ctx, W, H, t) {
       const an = analysis;
-      const S = CHAOS.system(an);
+      const S = CHAOS_SYSTEMS[an.sys];
       const wide = W >= 560;
-      const pw = wide ? Math.round(W * 0.5) : W;
-      // the pendulum
-      const reach = S.reach(an.p);
-      // wide: pendulum left, portrait right; narrow: pendulum on top, portrait below
-      const ph = wide ? H : H * 0.55;
-      const cx = pw / 2;
-      const cy = ph / 2 + (wide ? 0 : 8);
-      const k = (Math.min(pw, ph) / 2 - (wide ? 22 : 14)) / reach;
-      const P2 = (x, y) => [cx + x * k, cy - y * k];
-      ctx.save();
-      ctx.strokeStyle = C.grid;
-      ctx.setLineDash([4, 6]);
-      ctx.beginPath();
-      ctx.arc(cx, cy, reach * k, 0, 2 * Math.PI);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.restore();
-      // trail behind the last bob
-      if (an.trail) {
-        const dt = an.run.t[1] - an.run.t[0];
-        const n = Math.min(Math.floor(t / dt), an.run.t.length - 1);
-        const from = Math.max(0, n - Math.round(4 / dt));
-        ctx.save();
-        ctx.lineWidth = 1.6;
-        for (let i = from + 1; i <= n; i++) {
-          const a = S.positions(an.p, an.run.y.map((arr) => arr[i - 1]));
-          const b2 = S.positions(an.p, an.run.y.map((arr) => arr[i]));
-          const pa = P2(a[a.length - 1].x, a[a.length - 1].y);
-          const pb = P2(b2[b2.length - 1].x, b2[b2.length - 1].y);
-          ctx.strokeStyle = C.accent;
-          ctx.globalAlpha = 0.1 + 0.6 * ((i - from) / Math.max(1, n - from));
-          ctx.beginPath();
-          ctx.moveTo(pa[0], pa[1]);
-          ctx.lineTo(pb[0], pb[1]);
-          ctx.stroke();
-        }
-        ctx.restore();
-      }
-      const drawRig = (y, faint) => {
-        const pts = S.positions(an.p, y);
-        ctx.save();
-        if (faint) ctx.globalAlpha = 0.55;
-        ctx.strokeStyle = faint ? C.l2 : C.ink;
-        ctx.lineWidth = faint ? 2 : 3;
-        ctx.lineCap = 'round';
-        ctx.beginPath();
-        ctx.moveTo(cx, cy);
-        pts.forEach((q) => {
-          const [px, py] = P2(q.x, q.y);
-          ctx.lineTo(px, py);
-        });
-        ctx.stroke();
-        pts.forEach((q, i) => {
-          const [px, py] = P2(q.x, q.y);
-          const mass = an.sys === 'double' ? (i ? an.p.m2 : an.p.m1) : 1;
-          const r = Math.max(7, Math.min(20, 9 * Math.cbrt(mass)));
-          ctx.fillStyle = faint ? C.l2 : bodyColor(i);
-          ctx.strokeStyle = faint ? C.l2 : C.ink;
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ctx.arc(px, py, r, 0, 2 * Math.PI);
-          ctx.fill();
-          ctx.stroke();
-        });
-        ctx.restore();
-      };
-      if (an.twinOn) drawRig(CHAOS.at(an.twin, t), true);
-      drawRig(CHAOS.at(an.run, t), false);
-      // pivot
-      ctx.save();
-      ctx.fillStyle = C['bench-edge'];
-      ctx.fillRect(cx - 30, cy - 10, 60, 6);
-      ctx.fillStyle = C.ink;
-      ctx.beginPath();
-      ctx.arc(cx, cy, 4, 0, 2 * Math.PI);
-      ctx.fill();
-      ctx.restore();
-      labelText(ctx, S.label, 12, 18, C.ink, 'left', 15, 700, C.fontBody);
-      if (an.twinOn) labelText(ctx, 'Pink: twin started ' + TWIN_D + '° away', 12, 40, C.l2, 'left', 13, 600, C.fontBody);
-      // the live phase portrait
-      const b = Math.min(ui.track, S.angleIdx.length - 1);
-      if (wide) CHAOS.portrait(ctx, an, b, t, pw + 4, 8, W - pw - 12, H - 16, true);
-      else CHAOS.portrait(ctx, an, b, t, 4, ph + 4, W - 8, H - ph - 8, true);
+      const sb = wide ? { x0: 0, y0: 0, w: Math.round(W * 0.5), h: H } : { x0: 0, y0: 0, w: W, h: Math.round(H * 0.56) };
+      const lb = wide ? { x0: sb.w + 4, y0: 8, w: W - sb.w - 12, h: H - 16 } : { x0: 4, y0: sb.h + 4, w: W - 8, h: H - sb.h - 8 };
+      S.scene(ctx, an, sb, t);
+      const g = S.live(an);
+      CHAOS_GRAPHS[g.type](ctx, an, g, lb, t, true);
     },
-    // the graph tab: a large phase portrait, or the angles against time
     drawGraph(ctx, W, H) {
       const an = analysis;
-      const S = CHAOS.system(an);
-      if (ui.graph === 'a') return CHAOS.angleTime(ctx, an, W, H);
-      const b = ui.graph === 'v' && S.angleIdx.length > 1 ? 1 : 0;
-      CHAOS.portrait(ctx, an, b, anim.t, 0, 0, W, H, false);
-    },
-    angleTime(ctx, an, W, H) {
-      const S = CHAOS.system(an);
-      const L = 60;
-      const R = 16;
-      const T = 16;
-      const B = 40;
-      const X = (t) => L + ((W - L - R) * t) / CHAOS_T;
-      const Y = (deg) => T + ((H - T - B) * (180 - deg)) / 360;
-      ctx.font = '13px ' + C.fontMono;
-      ctx.strokeStyle = C.grid;
-      ctx.fillStyle = C.muted;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      for (let t = 0; t <= CHAOS_T; t += 10) {
-        ctx.beginPath();
-        ctx.moveTo(Math.round(X(t)) + 0.5, T);
-        ctx.lineTo(Math.round(X(t)) + 0.5, H - B);
-        ctx.stroke();
-        ctx.fillText(t + '', X(t), H - B + 6);
-      }
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'middle';
-      for (let d = -180; d <= 180; d += 90) {
-        ctx.beginPath();
-        ctx.moveTo(L, Math.round(Y(d)) + 0.5);
-        ctx.lineTo(W - R, Math.round(Y(d)) + 0.5);
-        ctx.stroke();
-        ctx.fillText(d + '°', L - 6, Y(d));
-      }
-      ctx.fillStyle = C.ink;
-      ctx.font = '600 14px ' + C.fontBody;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText('time t (s)', L + (W - L - R) / 2, H - 4);
-      const n = Math.min(Math.floor(anim.t / (an.run.t[1] - an.run.t[0])), an.run.t.length - 1);
-      const line = (run, ai, color, alpha, width) => {
-        ctx.save();
-        ctx.strokeStyle = color;
-        ctx.globalAlpha = alpha;
-        ctx.lineWidth = width;
-        ctx.beginPath();
-        let prev = null;
-        for (let i = 0; i <= n; i++) {
-          const d = wrapPi(run.y[ai][i]) / DEG;
-          if (prev === null || Math.abs(d - prev) > 180) ctx.moveTo(X(run.t[i]), Y(d));
-          else ctx.lineTo(X(run.t[i]), Y(d));
-          prev = d;
-        }
-        ctx.stroke();
-        ctx.restore();
-      };
-      S.angleIdx.forEach((ai, bi) => {
-        if (an.twinOn) line(an.twin, ai, C.l2, 0.55, 1.2);
-        line(an.run, ai, bi ? C['f-a'] : C.accent, 0.95, 1.8);
-      });
-      let lx = L + 10;
-      S.bodies.forEach((name, bi) => {
-        labelText(ctx, (S.angleIdx.length > 1 ? 'θ' + sub(bi + 1) + ': ' : 'θ: ') + name.toLowerCase(), lx, T + 12, bi ? C['f-a'] : C.accent, 'left', 13, 600, C.fontBody);
-        lx += 170;
-      });
-      if (an.twinOn) labelText(ctx, 'pink: the twin', lx, T + 12, C.l2, 'left', 13, 600, C.fontBody);
-      if (anim.t <= 0) labelText(ctx, 'Press Play to draw the graph', L + (W - L - R) / 2, T + (H - T - B) / 2, C.muted, 'center', 15, 400, C.fontBody);
+      ui.chaosClick = null;
+      const g = chaosGraph(an);
+      CHAOS_GRAPHS[g.type](ctx, an, g, { x0: 0, y0: 0, w: W, h: H }, anim.t, false);
     },
     forceSets(an, t) {
       if (an.sys !== 'single') return [];
-      const y = CHAOS.at(an.run, t || 0);
+      const y = sampleAt(an.run, t || 0);
       const th = y[0];
       const Tn = an.g * Math.cos(th) + an.p.L * y[1] * y[1]; // per kg
       return [{
@@ -5946,71 +7256,28 @@
         pairs: pairsH(['The rod pulls the bob toward the pivot, and the bob pulls the rod outward just as hard.', 'Earth pulls the bob down, and the bob pulls Earth up just as hard.']),
       };
     },
-    mcq(an) {
-      if (an.sys === 'single') {
-        return [{
-          key: 'chaos1',
-          q: 'Looking at its phase portrait, is the single pendulum’s motion chaotic?',
-          options: ['No: the path repeats the same closed loop (or spirals in steadily with damping)', 'Yes: the path never repeats'],
-          correct: 0,
-          why: 'A single pendulum has only one angle. Its phase portrait follows a curve of constant energy, so it can’t wander chaotically.',
-        }];
-      }
-      return [
-        {
-          key: 'chaos2',
-          q: 'A twin double pendulum starts just ' + TWIN_D + '° away. After 20 s, how will their motions compare?',
-          options: ['Still nearly the same', 'Completely different'],
-          correct: an.sep20 > 0.3 ? 1 : 0,
-          why: an.sep20 > 0.3
-            ? 'With these big swings the motion is chaotic: the tiny difference grows until the twins are unrelated. (After 20 s they differ by ' + fmt(an.sep20 / DEG, 0) + '°.)'
-            : 'With these small swings the motion is regular: the twins stay together. (After 20 s they differ by only ' + fmt(an.sep20 / DEG, 2) + '°.)',
-        },
-        {
-          key: 'chaos3',
-          q: 'Which phase portrait shape is a sign of chaos?',
-          options: ['A single closed loop that repeats', 'A path that fills a region without ever repeating, and is different for every tiny change in the start'],
-          correct: 1,
-          why: 'Regular motion traces the same curves (or a tidy band) again and again. Chaotic motion wanders, and nearby starts separate rapidly.',
-        },
-      ];
-    },
+    mcq: (an) => CHAOS_SYSTEMS[an.sys].mcq(an),
     quantities(an) {
       const q = [];
-      const row = (key, label, unit, value, sub2, group = 'main') => q.push({ key, group, groupTitle: 'Numbers', label, unit, value, sub: sub2 });
-      if (an.sys === 'single') {
-        const p = an.p;
-        row('T0', 'Period for small swings, 2π√(L/g)', 's', 2 * Math.PI * Math.sqrt(p.L / an.g));
-        if (!p.b && Math.abs(an.y0[0]) < Math.PI) {
-          const v = Math.sqrt(p.L * p.L * an.y0[1] * an.y0[1] + 2 * an.g * p.L * (1 - Math.cos(an.y0[0])));
-          row('vb', 'Speed of the bob at the bottom', 'm/s', v, 'use conservation of energy');
-        }
-      } else {
-        row('E', 'Total energy at the start', 'J', Math.abs(an.E0), 'take the pivot as height zero; enter the size');
-      }
+      CHAOS_SYSTEMS[an.sys].quantities(an, (key, label, unit, value, sub2) => q.push({ key: an.sys + '_' + key, group: 'main', groupTitle: 'Numbers', label, unit, value, sub: sub2 }));
       return q;
     },
     moreTitle: 'More',
-    solution(an) {
-      const g = fmt(an.g);
-      if (an.sys === 'single') {
-        const p = an.p;
-        return '<section><h3>1. The equation of motion</h3><p>Only the weight’s component along the arc, mg sin θ, changes the bob’s speed. Newton’s second law along the arc gives</p>' +
-          '<div class="eq">m L α = −m g sin θ' + (p.b ? ' − (damping)' : '') + '   →   α = −(g/L) sin θ' + (p.b ? ' − b ω' : '') + '</div>' +
-          '<p>For small angles sin θ ≈ θ, so the motion is simple harmonic with period T = 2π√(L/g) = 2π√(' + fmt(p.L) + ' / ' + g + ') = ' + fmt(2 * Math.PI * Math.sqrt(p.L / an.g)) + ' s. Bigger swings take a little longer.</p></section>' +
-          '<section><h3>2. Reading the phase portrait</h3><p>Each point plots the angle θ and the angular velocity ω at one instant. With no damping, energy is conserved, so the point moves along a curve of constant energy: a closed loop for back-and-forth swinging, or a wavy band across the whole plot if the bob goes over the top. Either way, the path repeats.' +
-          (p.b ? ' With damping, energy drains away, so the loop spirals in toward the bottom (θ = 0, ω = 0).' : '') + '</p></section>' +
-          '<section><h3>3. Why it can’t be chaotic</h3><p>The state is just two numbers (θ, ω), and paths in a 2-D phase portrait can’t cross. With nowhere to wander, the motion stays regular, and a twin started nearby stays nearby. Chaos needs at least three dimensions in phase space, which the double pendulum has.</p></section>';
+    solution: (an) => CHAOS_SYSTEMS[an.sys].solution(an),
+    // the graph picker in the graph panel
+    syncGraphPicker(an) {
+      const sel = $('sel-chaos-graph');
+      const list = chaosGraphs(an);
+      const g = chaosGraph(an);
+      const html = list.map((x) => '<option value="' + x.id + '"' + (x.id === g.id ? ' selected' : '') + '>' + x.label + '</option>').join('');
+      if (sel.dataset.sig !== an.sys + html) {
+        sel.innerHTML = html;
+        sel.dataset.sig = an.sys + html;
       }
-      const p = an.p;
-      return '<section><h3>1. Equations of motion</h3><p>The two angles depend on each other: the lower rod pulls on the upper bob and the upper bob drags the lower rod. Applying Newton’s laws to both bobs (or using energy methods) gives two coupled equations:</p>' +
-        '<div class="eq">α₁ = [m₂L₁ω₁² sin Δ cos Δ + m₂g sin θ₂ cos Δ + m₂L₂ω₂² sin Δ − (m₁+m₂)g sin θ₁] / [(m₁+m₂)L₁ − m₂L₁cos²Δ]\nα₂ = [−m₂L₂ω₂² sin Δ cos Δ + (m₁+m₂)(g sin θ₁ cos Δ − L₁ω₁² sin Δ − g sin θ₂)] / [(L₂/L₁)((m₁+m₂)L₁ − m₂L₁cos²Δ)]\nwith Δ = θ₂ − θ₁</div>' +
-        '<p>They can’t be solved with a formula, so the computer steps them forward in time (4th-order Runge–Kutta, 1 ms steps).</p></section>' +
-        '<section><h3>2. Energy is still conserved</h3><p>Taking the pivot as height zero and starting from rest:</p>' +
-        '<div class="eq">E = −(m₁+m₂) g L₁ cos θ₁ − m₂ g L₂ cos θ₂ = ' + fmt(an.E0) + ' J</div><p>Chaos doesn’t break energy conservation; the motion is fully determined by Newton’s laws. It is unpredictable only because tiny differences grow.</p></section>' +
-        '<section><h3>3. Small swings versus big swings</h3><p>For small angles the equations are nearly linear: the motion is a mix of two steady swinging patterns (normal modes), and the phase portrait fills a tidy band. A twin started ' + TWIN_D + '° away stays close.</p>' +
-        '<p>For big swings, like θ₁ = 120°, the nonlinear terms take over. The phase portrait scribbles over a wide region without repeating, and the twin’s ' + TWIN_D + '° difference grows roughly exponentially. ' +
-        (an.sep20 > 0.3 ? 'In this run the twins differ by ' + fmt(an.sep20 / DEG, 0) + '° after 20 s.' : 'In this run they differ by only ' + fmt(an.sep20 / DEG, 2) + '° after 20 s, so these starting angles are not chaotic.') + '</p></section>';
+      sel.value = g.id;
+      const S = CHAOS_SYSTEMS[an.sys];
+      const legend = g.type === 'map' && S.map.legend ? '<span class="map-legend">' + S.map.legend(an).map(([col, txt]) => chipH(col, txt)).join('') + '</span>' : '';
+      $('graph-hint').innerHTML = g.hint + (legend ? ' ' + legend : '');
     },
   };
 
@@ -6053,8 +7320,11 @@
     const isLab = isFma();
     const noGraph = !isLab && (!!(sim && sim.static) || !!(xs && xs.noGraph && analysis.ok && xs.noGraph(analysis)));
     $('tab-graph').hidden = noGraph;
-    $('tab-graph').textContent = isLab ? 'Data & graph' : 'Motion graph';
-    document.querySelector('#panel-graph .seg').hidden = isLab;
+    const isChaos = state.scenario === 'chaos' && analysis && analysis.ok;
+    $('tab-graph').textContent = isLab ? 'Data & graph' : isChaos ? 'Chaos graphs' : 'Motion graph';
+    document.querySelector('#panel-graph .seg').hidden = isLab || isChaos;
+    $('chaos-graph-wrap').hidden = !isChaos;
+    document.querySelector('#panel-graph .graph-wrap').classList.toggle('tall', !!isChaos);
     $('lab-data').hidden = !isLab;
     if (isLab) LAB.renderData();
     if (noGraph && ui.tab === 'graph') showTab('check');
@@ -6072,9 +7342,7 @@
       ui.graph = 'x';
       document.querySelectorAll('[data-graph]').forEach((x) => x.classList.toggle('on', x.dataset.graph === 'x'));
     }
- $('graph-hint').textContent = state.scenario === 'chaos'
-      ? 'Each point is the angle and angular velocity at one instant. A closed loop that repeats means regular motion; a tangle that never repeats, and that splits away from its twin, means chaos.'
-      : isLab
+    $('graph-hint').textContent = isLab
       ? 'Each run adds a point. A straight line through the points has slope M (the total mass) and intercept f (the friction).'
       : launching
       ? 'Press Play to draw the graph. On the ramp the block speeds up; in the air vₓ stays constant while v_y grows at g.'
@@ -6083,6 +7351,7 @@
         : state.scenario === 'body'
           ? 'Press Play to draw the graph. The force graph shows how big the push is and how briefly it lasts.'
           : 'Press Play to draw the graph for the tracked object. The slope of the velocity–time graph is the acceleration.';
+    if (isChaos) CHAOS.syncGraphPicker(analysis);
   }
 
   function renderScenarioTabs() {
@@ -6101,7 +7370,7 @@
 
   function plusWord() {
     if (!analysis.ok) return '';
-    if (analysis.kind === 'chaos') return '+ = counterclockwise from straight down';
+    if (analysis.kind === 'chaos') return ['single', 'double', 'driven'].includes(analysis.sys) ? '+ = counterclockwise from straight down' : '';
     if (xsFor(analysis)) return state.scenario === 'body' && cur().mode === 'sprint' ? '+ = forward' : '+ = up';
     const b = analysis.bodies[ui.track];
     if (analysis.kind === 'atwood') return ui.track === 0 ? '+ = up' : '+ = down';
@@ -6153,6 +7422,10 @@
     const pw = plusWord();
     if (sim && sim.static) {
       st.textContent = sim.staticMessage || 'This is an equilibrium problem: the leg and the weight stay at rest. Use the diagrams and Predict & check.';
+      return;
+    }
+    if (anim.t === 0 && !anim.playing && analysis.kind === 'chaos') {
+      st.textContent = 'Ready. Press Play to start the motion.' + (['single', 'double', 'driven'].includes(analysis.sys) ? ' Angles are measured from straight down; + is counterclockwise.' : '');
       return;
     }
     if (anim.t === 0 && !anim.playing) {
@@ -6344,6 +7617,23 @@
     });
     $('check-rows').addEventListener('change', (e) => {
       if (e.target.type === 'radio') ui.pred['mc:' + e.target.name.slice(3)] = e.target.value;
+    });
+    $('sel-chaos-graph').addEventListener('change', (e) => {
+      ui.chaosGraph = ui.chaosGraph || {};
+      ui.chaosGraph[cur().sys] = e.target.value;
+      syncModes();
+      drawGraph();
+    });
+    $('graph').addEventListener('click', (e) => {
+      if (state.scenario !== 'chaos' || !ui.chaosClick) return;
+      const r = $('graph').getBoundingClientRect();
+      const before = JSON.stringify(cur());
+      ui.chaosClick(e.clientX - r.left, e.clientY - r.top);
+      if (JSON.stringify(cur()) === before) return;
+      ui.pred = {};
+      reset();
+      renderControls();
+      changed();
     });
     $('lab-data').addEventListener('click', (e) => {
       const b = e.target.closest('[data-labdel]');

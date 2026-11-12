@@ -442,12 +442,18 @@ details.check-group summary { cursor: pointer; font-weight: 700; font-size: 1rem
 
 /* free-body diagrams */
 .fbd-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.fbd-head > * { min-width: 0; max-width: 100%; }
+#chaos-graph-wrap select { max-width: 100%; min-width: 0; }
+#chaos-graph-wrap { max-width: 100%; }
 .fbd-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--scene); }
 .fbd-scroll canvas { display: block; height: 290px; }
 .fbd-opts { display: flex; flex-wrap: wrap; gap: 6px 16px; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 0.98rem; color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { width: 18px; height: 3px; border-radius: 2px; display: inline-block; }
+.map-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; }
+.map-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.map-legend i { width: 14px; height: 14px; border-radius: 3px; display: inline-block; border: 1px solid var(--line); }
 .pairs { display: flex; flex-direction: column; gap: 8px; }
 .pairs h3 { font-family: var(--font-display); font-weight: 600; font-size: 1.15rem; margin: 4px 0 0; }
 .pairs ul { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 6px; max-width: 75ch; }
@@ -455,7 +461,7 @@ details.check-group summary { cursor: pointer; font-weight: 700; font-size: 1rem
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: baseline; }
 
 /* graph */
-.graph-wrap { position: relative; aspect-ratio: 5 / 2; min-height: 220px; border: 1px solid var(--line); border-radius: 8px; background: var(--scene); }
+.graph-wrap { position: relative; aspect-ratio: 5 / 2; min-height: 220px; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--scene); }
 .graph-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 
 /* solution */
@@ -496,7 +502,7 @@ details.check-group summary { cursor: pointer; font-weight: 700; font-size: 1rem
 
 /* On phones, show the apparatus right under the scenario picker, then the setup, then the analysis. */
 @media (max-width: 900px) {
-  .layout { display: flex; flex-direction: column; }
+  .layout { display: flex; flex-direction: column; align-items: stretch; }
   .stage { display: contents; }
   .scene-card { order: 1; }
   .controls { order: 2; }
@@ -546,3 +552,5 @@ input[disabled] { color: var(--muted); cursor: not-allowed; }
 #lab-data th { color: var(--muted); font-size: 0.88rem; }
 #lab-data td:first-child, #lab-data th:first-child { text-align: left; }
 @media (max-width: 600px) { .canvas-wrap.tall { aspect-ratio: 3 / 4; } }
+
+@media (max-width: 600px) { .graph-wrap.tall { aspect-ratio: 1 / 1; } }
