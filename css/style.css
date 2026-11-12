@@ -545,3 +545,4 @@ input[disabled] { color: var(--muted); cursor: not-allowed; }
 #lab-data th, #lab-data td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
 #lab-data th { color: var(--muted); font-size: 0.88rem; }
 #lab-data td:first-child, #lab-data th:first-child { text-align: left; }
+@media (max-width: 600px) { .canvas-wrap.tall { aspect-ratio: 3 / 4; } }

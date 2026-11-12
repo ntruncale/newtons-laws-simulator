@@ -18,6 +18,7 @@ It is a static web page: plain HTML, CSS and JavaScript, with no build step and 
 | **Equilibrium** | A traffic light hanging from two cables at different angles, a block pressed against a wall (static or sliding, with a push at any angle), and a block and tackle with 1–6 rope segments (hold, lift steadily, or lift while speeding up). |
 | **Labs** | *F = ma:* a cart and hanging mass with photogates; each run is recorded and the F-vs-a graph's slope gives the total mass and its intercept the friction. *Tilt the ramp:* the ramp rises until the block slips (μs = tan θ), then a timed slide gives μk. Both offer hidden values with measurement noise. |
 | **Third-law puzzles** | Horse and cart, tug-of-war, truck vs car collision, and book on a table: multiple-choice concept questions plus numbers, with third-law pairs shown. |
+| **Chaos** | A single pendulum and a double pendulum, computed with 4th-order Runge–Kutta, each with a live phase portrait (θ vs ω). An optional twin started 0.1° away shows sensitivity to initial conditions. Systems are self-contained in `CHAOS_SYSTEMS` in `js/app.js`, so more can be added. |
 
 On every surface you can:
 

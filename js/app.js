@@ -19,7 +19,7 @@
     [24.79, 'Jupiter, 24.79 m/s²'],
   ];
   const MAX_BLOCKS = { modified: 3, incline: 3, horizontal: 4 };
-  const SCENARIOS = ['atwood', 'modified', 'incline', 'horizontal', 'elevator', 'car', 'body', 'statics', 'lab', 'puzzles'];
+  const SCENARIOS = ['atwood', 'modified', 'incline', 'horizontal', 'elevator', 'car', 'body', 'statics', 'lab', 'puzzles', 'chaos'];
 
   const blk = (m) => ({ m, mus: 0.4, muk: 0.3 });
   function surfaceDefaults(o) {
@@ -59,6 +59,7 @@
       statics: STATICS.defaults(),
       lab: LAB.defaults(),
       car: CAR.defaults(),
+      chaos: CHAOS.defaults(),
       puzzles: PUZ.defaults(),
     };
   }
@@ -102,7 +103,7 @@
     const c = cur();
     if (sc === 'atwood') return [['m1', 'Mass 1'], ['m2', 'Mass 2']];
     if (sc === 'elevator') return [['person', 'Person']];
-    if (sc === 'body' || sc === 'statics' || sc === 'lab' || sc === 'puzzles' || sc === 'car') return [];
+    if (sc === 'body' || sc === 'statics' || sc === 'lab' || sc === 'puzzles' || sc === 'car' || sc === 'chaos') return [];
     const out = c.blocks.map((b, i) => ['b' + i, 'Block ' + (i + 1)]);
     const nb = c.blocks.length;
     const hang = sc === 'modified' || (sc === 'incline' && c.hanging.on);
@@ -488,7 +489,7 @@
         newMystery();
         renderControls();
       }
-      if (path === 'mode' || path === 'motion' || path === 'p' || path === 'type' || path === 'tackle.motion') {
+      if (path === 'mode' || path === 'motion' || path === 'p' || path === 'type' || path === 'tackle.motion' || path === 'sys') {
         ui.pred = {};
         ui.solutionOpen = false;
         ui.graph = 'x';
@@ -540,6 +541,9 @@
       c.links[+btn.dataset.index] = btn.dataset.type;
     } else if (act === 'random') {
       randomize();
+    } else if (act === 'chaospreset') {
+      CHAOS.preset(c, btn.dataset.preset);
+      ui.pred = {};
     } else if (act === 'newcar') {
       ui.carSecret = null;
       ui.pred = {};
@@ -1843,8 +1847,9 @@
     const canvas = $('graph');
     const { ctx, W, H } = prepCanvas(canvas);
     if (!analysis || !analysis.ok) return;
-    if (isFma()) {
-      LAB.drawGraph(ctx, W, H);
+    const xg = xsFor(analysis);
+    if (xg && xg.drawGraph) {
+      xg.drawGraph(ctx, W, H);
       return;
     }
     const i = Math.min(ui.track, analysis.bodies.length - 1);
@@ -5483,9 +5488,535 @@
     },
   };
 
-  const XS = { elevator: ELEV, body: BODY, traction: BODY, traffic: STATICS, wall: STATICS, tackle: TACKLE, lab: LAB, tilt: TILT, puzzle: PUZ, car: CAR };
+  /* ---------------- Chaos: pendulums and phase portraits ----------------
+   * Each system below is self-contained, so new ones can be added to
+   * CHAOS_SYSTEMS without touching the rest of the tab. A system supplies:
+   *   label, bodies (names), defaults, controls(c, sys), params(c), y0(c),
+   *   presets, positions(p, y) -> bob points, angleIdx/omegaIdx per body.
+   */
+  const CHAOS_T = 60; // seconds of motion computed
+  const TWIN_D = 0.1; // the twin starts this many degrees away
+  const wrapPi = (a) => {
+    const t = (a + Math.PI) % (2 * Math.PI);
+    return (t < 0 ? t + 2 * Math.PI : t) - Math.PI;
+  };
+  const CHAOS_SYSTEMS = {
+    single: {
+      label: 'Single pendulum',
+      bodies: ['Bob'],
+      angleIdx: [0],
+      omegaIdx: [1],
+      defaults: () => ({ L: 1, th: 60, w: 0, b: 0 }),
+      presets: { small: { th: 15, w: 0 }, big: { th: 170, w: 0 } },
+      params: (c) => ({ g: state.g, L: c.single.L, b: c.single.b }),
+      y0: (c) => [c.single.th * DEG, c.single.w],
+      nudge: (y) => [y[0] + TWIN_D * DEG, y[1]],
+      positions: (p, y) => [{ x: p.L * Math.sin(y[0]), y: -p.L * Math.cos(y[0]) }],
+      reach: (p) => p.L,
+      controls(c) {
+        const s = c.single;
+        return numField('Length L', 'single.L', s.L, 'm', { min: 0.1, max: 5, step: 0.1 }) +
+          numField('Starting angle θ₀', 'single.th', s.th, '°', { min: -179, max: 179, step: 1 }) +
+          numField('Starting angular velocity ω₀', 'single.w', s.w, 'rad/s', { min: -20, max: 20, step: 0.1 }) +
+          numField('Damping (air resistance)', 'single.b', s.b, '1/s', { min: 0, max: 2, step: 0.05 }) +
+          '<p class="note">Angles are measured from straight down; positive is counterclockwise. The bob’s mass doesn’t change the motion.</p>';
+      },
+    },
+    double: {
+      label: 'Double pendulum',
+      bodies: ['Upper bob', 'Lower bob'],
+      angleIdx: [0, 2],
+      omegaIdx: [1, 3],
+      defaults: () => ({ m1: 1, m2: 1, L1: 1, L2: 1, th1: 120, th2: -30 }),
+      presets: { small: { th1: 10, th2: 10 }, big: { th1: 120, th2: -30 } },
+      params: (c) => ({ g: state.g, ...c.double }),
+      y0: (c) => [c.double.th1 * DEG, 0, c.double.th2 * DEG, 0],
+      nudge: (y) => [y[0] + TWIN_D * DEG, y[1], y[2], y[3]],
+      positions(p, y) {
+        const b1 = { x: p.L1 * Math.sin(y[0]), y: -p.L1 * Math.cos(y[0]) };
+        return [b1, { x: b1.x + p.L2 * Math.sin(y[2]), y: b1.y - p.L2 * Math.cos(y[2]) }];
+      },
+      reach: (p) => p.L1 + p.L2,
+      controls(c) {
+        const d = c.double;
+        return numField('Upper mass m₁', 'double.m1', d.m1, 'kg', { min: 0.1, max: 10, step: 0.1 }) +
+          numField('Lower mass m₂', 'double.m2', d.m2, 'kg', { min: 0.1, max: 10, step: 0.1 }) +
+          numField('Upper rod L₁', 'double.L1', d.L1, 'm', { min: 0.1, max: 3, step: 0.1 }) +
+          numField('Lower rod L₂', 'double.L2', d.L2, 'm', { min: 0.1, max: 3, step: 0.1 }) +
+          numField('Starting angle θ₁', 'double.th1', d.th1, '°', { min: -179, max: 179, step: 1 }) +
+          numField('Starting angle θ₂', 'double.th2', d.th2, '°', { min: -179, max: 179, step: 1 }) +
+          '<p class="note">Both rods start at rest. Angles are from straight down; positive is counterclockwise.</p>';
+      },
+    },
+  };
+  const CHAOS = {
+    defaults: () => ({ sys: 'double', twin: true, trail: true, single: CHAOS_SYSTEMS.single.defaults(), double: CHAOS_SYSTEMS.double.defaults(), mystery: { on: false, target: '' } }),
+    system: (an) => CHAOS_SYSTEMS[an.sys],
+    solve(c) {
+      const S = CHAOS_SYSTEMS[c.sys];
+      const p = S.params(c);
+      const y0 = S.y0(c);
+      const key = JSON.stringify([c.sys, p, y0]);
+      if (!ui.chaosCache || ui.chaosCache.key !== key) {
+        const run = P.simulatePendulum(c.sys, p, y0, CHAOS_T, 0.001, 0.01);
+        const twin = P.simulatePendulum(c.sys, p, S.nudge(y0), CHAOS_T, 0.001, 0.01);
+        // how far apart the twin is after 20 s (the last bob's angle)
+        const i20 = Math.round(20 / run.dtSample);
+        const ai = S.angleIdx[S.angleIdx.length - 1];
+        const sep20 = Math.abs(wrapPi(run.y[ai][i20] - twin.y[ai][i20]));
+        // fixed axis limits for the phase portraits
+        const wmax = S.omegaIdx.map((oi) => {
+          let m = 0;
+          for (const arr of [run.y[oi], twin.y[oi]]) for (let i = 0; i < arr.length; i++) m = Math.max(m, Math.abs(arr[i]));
+          return Math.max(0.5, m * 1.1);
+        });
+        // angle range: zoom in when the bob never goes near the top
+        const thmax = S.angleIdx.map((ai) => {
+          let m = 0;
+          for (const arr of [run.y[ai], twin.y[ai]]) for (let i = 0; i < arr.length; i++) m = Math.max(m, Math.abs(wrapPi(arr[i])));
+          return m < 2.6 ? Math.max(0.05, m * 1.15) : Math.PI;
+        });
+        ui.chaosCache = { key, run, twin, sep20, wmax, thmax };
+      }
+      const cc = ui.chaosCache;
+      const an = { kind: 'chaos', ok: true, sys: c.sys, p, y0, g: state.g, twinOn: c.twin, trail: c.trail, ...cc };
+      an.bodies = S.bodies.map((name) => ({ name, m: 1, kind: 'hanging', a: 0 }));
+      an.atRest = false;
+      an.E0 = P.PENDULUMS[c.sys].energy(p, y0);
+      return an;
+    },
+    controls(c) {
+      const S = CHAOS_SYSTEMS[c.sys];
+      let h = '<div class="group"><h2>System</h2>' + selectField('Choose a system', 'sel-chaos-sys', 'sys', Object.keys(CHAOS_SYSTEMS).map((k) => [k, CHAOS_SYSTEMS[k].label]), c.sys, true) +
+        '<div class="btn-row"><button type="button" class="btn btn-small" data-action="chaospreset" data-preset="small">Small swings</button><button type="button" class="btn btn-small" data-action="chaospreset" data-preset="big">Big swings</button></div></div>';
+      h += '<div class="group"><h2>' + S.label + '</h2>' + S.controls(c) + '</div>';
+      h += '<div class="group"><h2>Show</h2>' + checkField('A twin started ' + TWIN_D + '° away (faint)', 'twin', c.twin) + checkField('A trail behind the ' + (c.sys === 'single' ? 'bob' : 'lower bob'), 'trail', c.trail) +
+        '<p class="note">The computer follows the motion for ' + CHAOS_T + ' s. Slow it down with the Speed menu.</p></div>';
+      return h;
+    },
+    preset(c, which) {
+      Object.assign(c[c.sys], CHAOS_SYSTEMS[c.sys].presets[which]);
+    },
+    randomize(c, r) {
+      if (c.sys === 'single') Object.assign(c.single, { L: r(0.5, 2, 0.1), th: r(-170, 170, 5) });
+      else Object.assign(c.double, { th1: r(-170, 170, 5), th2: r(-170, 170, 5), m1: r(0.5, 3, 0.5), m2: r(0.5, 3, 0.5) });
+    },
+    load(c, num) {
+      const d = CHAOS.defaults();
+      const s = c.single || {};
+      const dd = c.double || {};
+      return {
+        sys: CHAOS_SYSTEMS[c.sys] ? c.sys : d.sys,
+        twin: c.twin !== false,
+        trail: c.trail !== false,
+        single: { L: num(s.L, 1, 0.1, 5), th: num(s.th, 60, -179, 179), w: num(s.w, 0, -20, 20), b: num(s.b, 0, 0, 2) },
+        double: {
+          m1: num(dd.m1, 1, 0.1, 10),
+          m2: num(dd.m2, 1, 0.1, 10),
+          L1: num(dd.L1, 1, 0.1, 3),
+          L2: num(dd.L2, 1, 0.1, 3),
+          th1: num(dd.th1, 120, -179, 179),
+          th2: num(dd.th2, -30, -179, 179),
+        },
+        mystery: d.mystery,
+      };
+    },
+    buildSim: () => ({ kind: 'chaos', tStop: CHAOS_T, reason: 'End of the ' + CHAOS_T + ' s run' }),
+    // the state at time t, interpolated between saved samples
+    at(run, t) {
+      const f = Math.min(t / (run.t[1] - run.t[0]), run.t.length - 1);
+      const i = Math.floor(f);
+      const j = Math.min(i + 1, run.t.length - 1);
+      const u = f - i;
+      return run.y.map((a) => a[i] + (a[j] - a[i]) * u);
+    },
+    motion(an, t) {
+      const S = CHAOS.system(an);
+      const y = CHAOS.at(an.run, t);
+      const b = Math.min(ui.track, S.angleIdx.length - 1);
+      return { s: y[S.angleIdx[b]], v: y[S.omegaIdx[b]], a: 0 };
+    },
+    readouts(an, t) {
+      const S = CHAOS.system(an);
+      const y = CHAOS.at(an.run, t);
+      const b = Math.min(ui.track, S.angleIdx.length - 1);
+      const sub2 = S.angleIdx.length > 1 ? sub(b + 1) : '';
+      return [
+        { label: 'Angle θ' + sub2, value: fmt(wrapPi(y[S.angleIdx[b]]) / DEG, 1) + '°' },
+        { label: 'Angular velocity ω' + sub2, value: fmt(y[S.omegaIdx[b]]) + ' rad/s' },
+      ];
+    },
+    noFbd: (an) => an.sys !== 'single',
+    liveFbd: true,
+    graphNames: () => (cur().sys === 'single' ? { x: 'Phase portrait', v: '', a: 'Angle–time' } : { x: 'Phase portrait: upper bob', v: 'Phase portrait: lower bob', a: 'Angle–time' }),
+    graphValue: () => 0,
+    graphLabel: { x: '', v: '', a: '' },
+    // a phase portrait (theta vs omega) in the box x0, y0, w, h, up to time tNow
+    portrait(ctx, an, b, tNow, x0, y0, w, h, small) {
+      const S = CHAOS.system(an);
+      const ai = S.angleIdx[b];
+      const oi = S.omegaIdx[b];
+      const wmax = an.wmax[b];
+      const tmax = an.thmax[b];
+      const L = small ? 48 : 64;
+      const R = 10;
+      const T = small ? 26 : 16;
+      const B = small ? 28 : 40;
+      const X = (th) => x0 + L + ((w - L - R) * (th + tmax)) / (2 * tmax);
+      const Y = (om) => y0 + T + ((h - T - B) * (wmax - om)) / (2 * wmax);
+      ctx.save();
+      ctx.fillStyle = C.scene;
+      ctx.fillRect(x0, y0, w, h);
+      ctx.strokeStyle = C.grid;
+      ctx.lineWidth = 1;
+      ctx.font = (small ? 11 : 13) + 'px ' + C.fontMono;
+      ctx.fillStyle = C.muted;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      const xt = tmax >= Math.PI - 1e-9
+        ? [[-Math.PI, '−π'], [-Math.PI / 2, '−π/2'], [0, '0'], [Math.PI / 2, 'π/2'], [Math.PI, 'π']]
+        : (() => {
+            const st = niceStep(2 * tmax, small ? 4 : 6);
+            const out = [];
+            for (let v = Math.ceil(-tmax / st) * st; v <= tmax + 1e-9; v += st) out.push([v, fmt(v, st < 0.1 ? 2 : 1)]);
+            return out;
+          })();
+      xt.forEach(([v, txt]) => {
+        ctx.beginPath();
+        ctx.moveTo(Math.round(X(v)) + 0.5, y0 + T);
+        ctx.lineTo(Math.round(X(v)) + 0.5, y0 + h - B);
+        ctx.stroke();
+        ctx.fillText(txt, X(v), y0 + h - B + 5);
+      });
+      const ys = niceStep(2 * wmax, small ? 4 : 6);
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      for (let v = Math.ceil(-wmax / ys) * ys; v <= wmax + 1e-9; v += ys) {
+        ctx.beginPath();
+        ctx.moveTo(x0 + L, Math.round(Y(v)) + 0.5);
+        ctx.lineTo(x0 + w - R, Math.round(Y(v)) + 0.5);
+        ctx.stroke();
+        ctx.fillText(fmt(v, ys < 1 ? 1 : 0), x0 + L - 5, Y(v));
+      }
+      ctx.strokeStyle = C.muted;
+      ctx.beginPath();
+      ctx.moveTo(X(0), y0 + T);
+      ctx.lineTo(X(0), y0 + h - B);
+      ctx.moveTo(x0 + L, Y(0));
+      ctx.lineTo(x0 + w - R, Y(0));
+      ctx.stroke();
+      ctx.fillStyle = C.ink;
+      ctx.font = '600 ' + (small ? 12 : 14) + 'px ' + C.fontBody;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText('angle θ' + (S.angleIdx.length > 1 ? sub(b + 1) : '') + ' (rad)', x0 + L + (w - L - R) / 2, y0 + h - 2);
+      ctx.save();
+      ctx.translate(x0 + (small ? 10 : 14), y0 + T + (h - T - B) / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.textBaseline = 'middle';
+      ctx.fillText('ω' + (S.angleIdx.length > 1 ? sub(b + 1) : '') + ' (rad/s)', 0, 0);
+      ctx.restore();
+      if (small) {
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText('Phase portrait' + (S.angleIdx.length > 1 ? ', ' + S.bodies[b].toLowerCase() : ''), x0 + 8, y0 + 6);
+      }
+      // the paths: the twin first (faint), then the main run
+      const n = Math.min(Math.floor(tNow / (an.run.t[1] - an.run.t[0])), an.run.t.length - 1);
+      const path = (run, color, width, alpha) => {
+        const A = run.y[ai];
+        const Om = run.y[oi];
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x0 + L, y0 + T, w - L - R, h - T - B);
+        ctx.clip();
+        ctx.strokeStyle = color;
+        ctx.globalAlpha = alpha;
+        ctx.lineWidth = width;
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        let prev = null;
+        for (let i = 0; i <= n; i++) {
+          const th = wrapPi(A[i]);
+          const px = X(th);
+          const py = Y(Om[i]);
+          if (prev === null || Math.abs(th - prev) > Math.PI) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+          prev = th;
+        }
+        ctx.stroke();
+        ctx.restore();
+        return [X(wrapPi(A[n])), Y(Om[n])];
+      };
+      if (an.twinOn) {
+        const [tx, ty] = path(an.twin, C.l2, 1.3, 0.6);
+        ctx.fillStyle = C.l2;
+        ctx.beginPath();
+        ctx.arc(tx, ty, 4, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+      const [mx, my] = path(an.run, C.accent, small ? 1.4 : 1.8, 0.95);
+      ctx.fillStyle = C.accent;
+      ctx.strokeStyle = C.scene;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(mx, my, 5, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    },
+    draw(ctx, W, H, t) {
+      const an = analysis;
+      const S = CHAOS.system(an);
+      const wide = W >= 560;
+      const pw = wide ? Math.round(W * 0.5) : W;
+      // the pendulum
+      const reach = S.reach(an.p);
+      // wide: pendulum left, portrait right; narrow: pendulum on top, portrait below
+      const ph = wide ? H : H * 0.55;
+      const cx = pw / 2;
+      const cy = ph / 2 + (wide ? 0 : 8);
+      const k = (Math.min(pw, ph) / 2 - (wide ? 22 : 14)) / reach;
+      const P2 = (x, y) => [cx + x * k, cy - y * k];
+      ctx.save();
+      ctx.strokeStyle = C.grid;
+      ctx.setLineDash([4, 6]);
+      ctx.beginPath();
+      ctx.arc(cx, cy, reach * k, 0, 2 * Math.PI);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+      // trail behind the last bob
+      if (an.trail) {
+        const dt = an.run.t[1] - an.run.t[0];
+        const n = Math.min(Math.floor(t / dt), an.run.t.length - 1);
+        const from = Math.max(0, n - Math.round(4 / dt));
+        ctx.save();
+        ctx.lineWidth = 1.6;
+        for (let i = from + 1; i <= n; i++) {
+          const a = S.positions(an.p, an.run.y.map((arr) => arr[i - 1]));
+          const b2 = S.positions(an.p, an.run.y.map((arr) => arr[i]));
+          const pa = P2(a[a.length - 1].x, a[a.length - 1].y);
+          const pb = P2(b2[b2.length - 1].x, b2[b2.length - 1].y);
+          ctx.strokeStyle = C.accent;
+          ctx.globalAlpha = 0.1 + 0.6 * ((i - from) / Math.max(1, n - from));
+          ctx.beginPath();
+          ctx.moveTo(pa[0], pa[1]);
+          ctx.lineTo(pb[0], pb[1]);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+      const drawRig = (y, faint) => {
+        const pts = S.positions(an.p, y);
+        ctx.save();
+        if (faint) ctx.globalAlpha = 0.55;
+        ctx.strokeStyle = faint ? C.l2 : C.ink;
+        ctx.lineWidth = faint ? 2 : 3;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        pts.forEach((q) => {
+          const [px, py] = P2(q.x, q.y);
+          ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+        pts.forEach((q, i) => {
+          const [px, py] = P2(q.x, q.y);
+          const mass = an.sys === 'double' ? (i ? an.p.m2 : an.p.m1) : 1;
+          const r = Math.max(7, Math.min(20, 9 * Math.cbrt(mass)));
+          ctx.fillStyle = faint ? C.l2 : bodyColor(i);
+          ctx.strokeStyle = faint ? C.l2 : C.ink;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(px, py, r, 0, 2 * Math.PI);
+          ctx.fill();
+          ctx.stroke();
+        });
+        ctx.restore();
+      };
+      if (an.twinOn) drawRig(CHAOS.at(an.twin, t), true);
+      drawRig(CHAOS.at(an.run, t), false);
+      // pivot
+      ctx.save();
+      ctx.fillStyle = C['bench-edge'];
+      ctx.fillRect(cx - 30, cy - 10, 60, 6);
+      ctx.fillStyle = C.ink;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 4, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.restore();
+      labelText(ctx, S.label, 12, 18, C.ink, 'left', 15, 700, C.fontBody);
+      if (an.twinOn) labelText(ctx, 'Pink: twin started ' + TWIN_D + '° away', 12, 40, C.l2, 'left', 13, 600, C.fontBody);
+      // the live phase portrait
+      const b = Math.min(ui.track, S.angleIdx.length - 1);
+      if (wide) CHAOS.portrait(ctx, an, b, t, pw + 4, 8, W - pw - 12, H - 16, true);
+      else CHAOS.portrait(ctx, an, b, t, 4, ph + 4, W - 8, H - ph - 8, true);
+    },
+    // the graph tab: a large phase portrait, or the angles against time
+    drawGraph(ctx, W, H) {
+      const an = analysis;
+      const S = CHAOS.system(an);
+      if (ui.graph === 'a') return CHAOS.angleTime(ctx, an, W, H);
+      const b = ui.graph === 'v' && S.angleIdx.length > 1 ? 1 : 0;
+      CHAOS.portrait(ctx, an, b, anim.t, 0, 0, W, H, false);
+    },
+    angleTime(ctx, an, W, H) {
+      const S = CHAOS.system(an);
+      const L = 60;
+      const R = 16;
+      const T = 16;
+      const B = 40;
+      const X = (t) => L + ((W - L - R) * t) / CHAOS_T;
+      const Y = (deg) => T + ((H - T - B) * (180 - deg)) / 360;
+      ctx.font = '13px ' + C.fontMono;
+      ctx.strokeStyle = C.grid;
+      ctx.fillStyle = C.muted;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      for (let t = 0; t <= CHAOS_T; t += 10) {
+        ctx.beginPath();
+        ctx.moveTo(Math.round(X(t)) + 0.5, T);
+        ctx.lineTo(Math.round(X(t)) + 0.5, H - B);
+        ctx.stroke();
+        ctx.fillText(t + '', X(t), H - B + 6);
+      }
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      for (let d = -180; d <= 180; d += 90) {
+        ctx.beginPath();
+        ctx.moveTo(L, Math.round(Y(d)) + 0.5);
+        ctx.lineTo(W - R, Math.round(Y(d)) + 0.5);
+        ctx.stroke();
+        ctx.fillText(d + '°', L - 6, Y(d));
+      }
+      ctx.fillStyle = C.ink;
+      ctx.font = '600 14px ' + C.fontBody;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText('time t (s)', L + (W - L - R) / 2, H - 4);
+      const n = Math.min(Math.floor(anim.t / (an.run.t[1] - an.run.t[0])), an.run.t.length - 1);
+      const line = (run, ai, color, alpha, width) => {
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.globalAlpha = alpha;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        let prev = null;
+        for (let i = 0; i <= n; i++) {
+          const d = wrapPi(run.y[ai][i]) / DEG;
+          if (prev === null || Math.abs(d - prev) > 180) ctx.moveTo(X(run.t[i]), Y(d));
+          else ctx.lineTo(X(run.t[i]), Y(d));
+          prev = d;
+        }
+        ctx.stroke();
+        ctx.restore();
+      };
+      S.angleIdx.forEach((ai, bi) => {
+        if (an.twinOn) line(an.twin, ai, C.l2, 0.55, 1.2);
+        line(an.run, ai, bi ? C['f-a'] : C.accent, 0.95, 1.8);
+      });
+      let lx = L + 10;
+      S.bodies.forEach((name, bi) => {
+        labelText(ctx, (S.angleIdx.length > 1 ? 'θ' + sub(bi + 1) + ': ' : 'θ: ') + name.toLowerCase(), lx, T + 12, bi ? C['f-a'] : C.accent, 'left', 13, 600, C.fontBody);
+        lx += 170;
+      });
+      if (an.twinOn) labelText(ctx, 'pink: the twin', lx, T + 12, C.l2, 'left', 13, 600, C.fontBody);
+      if (anim.t <= 0) labelText(ctx, 'Press Play to draw the graph', L + (W - L - R) / 2, T + (H - T - B) / 2, C.muted, 'center', 15, 400, C.fontBody);
+    },
+    forceSets(an, t) {
+      if (an.sys !== 'single') return [];
+      const y = CHAOS.at(an.run, t || 0);
+      const th = y[0];
+      const Tn = an.g * Math.cos(th) + an.p.L * y[1] * y[1]; // per kg
+      return [{
+        body: { name: 'Bob (1 kg)', m: null, kind: 'hanging' },
+        idx: 0,
+        tilt: 0,
+        arrows: [
+          { dir: { x: -Math.sin(th), y: Math.cos(th) }, mag: Math.max(0, Tn), color: C.l1, label: 'T' },
+          { dir: { x: 0, y: -1 }, mag: an.g, color: C['f-w'], label: 'W' },
+        ],
+      }];
+    },
+    fbdCaption: () => 'The rod pulls toward the pivot and gravity pulls down. Press Play to watch both change: T is largest at the bottom, where the bob moves fastest.',
+    legend() {
+      return {
+        legend: chipH('var(--l1)', 'T: the rod pulls the bob') + chipH('var(--f-w)', 'W: weight'),
+        pairs: pairsH(['The rod pulls the bob toward the pivot, and the bob pulls the rod outward just as hard.', 'Earth pulls the bob down, and the bob pulls Earth up just as hard.']),
+      };
+    },
+    mcq(an) {
+      if (an.sys === 'single') {
+        return [{
+          key: 'chaos1',
+          q: 'Looking at its phase portrait, is the single pendulum’s motion chaotic?',
+          options: ['No: the path repeats the same closed loop (or spirals in steadily with damping)', 'Yes: the path never repeats'],
+          correct: 0,
+          why: 'A single pendulum has only one angle. Its phase portrait follows a curve of constant energy, so it can’t wander chaotically.',
+        }];
+      }
+      return [
+        {
+          key: 'chaos2',
+          q: 'A twin double pendulum starts just ' + TWIN_D + '° away. After 20 s, how will their motions compare?',
+          options: ['Still nearly the same', 'Completely different'],
+          correct: an.sep20 > 0.3 ? 1 : 0,
+          why: an.sep20 > 0.3
+            ? 'With these big swings the motion is chaotic: the tiny difference grows until the twins are unrelated. (After 20 s they differ by ' + fmt(an.sep20 / DEG, 0) + '°.)'
+            : 'With these small swings the motion is regular: the twins stay together. (After 20 s they differ by only ' + fmt(an.sep20 / DEG, 2) + '°.)',
+        },
+        {
+          key: 'chaos3',
+          q: 'Which phase portrait shape is a sign of chaos?',
+          options: ['A single closed loop that repeats', 'A path that fills a region without ever repeating, and is different for every tiny change in the start'],
+          correct: 1,
+          why: 'Regular motion traces the same curves (or a tidy band) again and again. Chaotic motion wanders, and nearby starts separate rapidly.',
+        },
+      ];
+    },
+    quantities(an) {
+      const q = [];
+      const row = (key, label, unit, value, sub2, group = 'main') => q.push({ key, group, groupTitle: 'Numbers', label, unit, value, sub: sub2 });
+      if (an.sys === 'single') {
+        const p = an.p;
+        row('T0', 'Period for small swings, 2π√(L/g)', 's', 2 * Math.PI * Math.sqrt(p.L / an.g));
+        if (!p.b && Math.abs(an.y0[0]) < Math.PI) {
+          const v = Math.sqrt(p.L * p.L * an.y0[1] * an.y0[1] + 2 * an.g * p.L * (1 - Math.cos(an.y0[0])));
+          row('vb', 'Speed of the bob at the bottom', 'm/s', v, 'use conservation of energy');
+        }
+      } else {
+        row('E', 'Total energy at the start', 'J', Math.abs(an.E0), 'take the pivot as height zero; enter the size');
+      }
+      return q;
+    },
+    moreTitle: 'More',
+    solution(an) {
+      const g = fmt(an.g);
+      if (an.sys === 'single') {
+        const p = an.p;
+        return '<section><h3>1. The equation of motion</h3><p>Only the weight’s component along the arc, mg sin θ, changes the bob’s speed. Newton’s second law along the arc gives</p>' +
+          '<div class="eq">m L α = −m g sin θ' + (p.b ? ' − (damping)' : '') + '   →   α = −(g/L) sin θ' + (p.b ? ' − b ω' : '') + '</div>' +
+          '<p>For small angles sin θ ≈ θ, so the motion is simple harmonic with period T = 2π√(L/g) = 2π√(' + fmt(p.L) + ' / ' + g + ') = ' + fmt(2 * Math.PI * Math.sqrt(p.L / an.g)) + ' s. Bigger swings take a little longer.</p></section>' +
+          '<section><h3>2. Reading the phase portrait</h3><p>Each point plots the angle θ and the angular velocity ω at one instant. With no damping, energy is conserved, so the point moves along a curve of constant energy: a closed loop for back-and-forth swinging, or a wavy band across the whole plot if the bob goes over the top. Either way, the path repeats.' +
+          (p.b ? ' With damping, energy drains away, so the loop spirals in toward the bottom (θ = 0, ω = 0).' : '') + '</p></section>' +
+          '<section><h3>3. Why it can’t be chaotic</h3><p>The state is just two numbers (θ, ω), and paths in a 2-D phase portrait can’t cross. With nowhere to wander, the motion stays regular, and a twin started nearby stays nearby. Chaos needs at least three dimensions in phase space, which the double pendulum has.</p></section>';
+      }
+      const p = an.p;
+      return '<section><h3>1. Equations of motion</h3><p>The two angles depend on each other: the lower rod pulls on the upper bob and the upper bob drags the lower rod. Applying Newton’s laws to both bobs (or using energy methods) gives two coupled equations:</p>' +
+        '<div class="eq">α₁ = [m₂L₁ω₁² sin Δ cos Δ + m₂g sin θ₂ cos Δ + m₂L₂ω₂² sin Δ − (m₁+m₂)g sin θ₁] / [(m₁+m₂)L₁ − m₂L₁cos²Δ]\nα₂ = [−m₂L₂ω₂² sin Δ cos Δ + (m₁+m₂)(g sin θ₁ cos Δ − L₁ω₁² sin Δ − g sin θ₂)] / [(L₂/L₁)((m₁+m₂)L₁ − m₂L₁cos²Δ)]\nwith Δ = θ₂ − θ₁</div>' +
+        '<p>They can’t be solved with a formula, so the computer steps them forward in time (4th-order Runge–Kutta, 1 ms steps).</p></section>' +
+        '<section><h3>2. Energy is still conserved</h3><p>Taking the pivot as height zero and starting from rest:</p>' +
+        '<div class="eq">E = −(m₁+m₂) g L₁ cos θ₁ − m₂ g L₂ cos θ₂ = ' + fmt(an.E0) + ' J</div><p>Chaos doesn’t break energy conservation; the motion is fully determined by Newton’s laws. It is unpredictable only because tiny differences grow.</p></section>' +
+        '<section><h3>3. Small swings versus big swings</h3><p>For small angles the equations are nearly linear: the motion is a mix of two steady swinging patterns (normal modes), and the phase portrait fills a tidy band. A twin started ' + TWIN_D + '° away stays close.</p>' +
+        '<p>For big swings, like θ₁ = 120°, the nonlinear terms take over. The phase portrait scribbles over a wide region without repeating, and the twin’s ' + TWIN_D + '° difference grows roughly exponentially. ' +
+        (an.sep20 > 0.3 ? 'In this run the twins differ by ' + fmt(an.sep20 / DEG, 0) + '° after 20 s.' : 'In this run they differ by only ' + fmt(an.sep20 / DEG, 2) + '° after 20 s, so these starting angles are not chaotic.') + '</p></section>';
+    },
+  };
+
+  const XS = { elevator: ELEV, body: BODY, traction: BODY, traffic: STATICS, wall: STATICS, tackle: TACKLE, lab: LAB, tilt: TILT, puzzle: PUZ, car: CAR, chaos: CHAOS };
   const xsFor = (an) => (an && XS[an.kind]) || null;
-  const MODULES = { elevator: ELEV, body: BODY, statics: STATICS, lab: LAB, puzzles: PUZ, car: CAR };
+  const MODULES = { elevator: ELEV, body: BODY, statics: STATICS, lab: LAB, puzzles: PUZ, car: CAR, chaos: CHAOS };
   const scenarioModule = () => {
     const sc = state.scenario;
     if (sc === 'statics' && cur().mode === 'tackle') return TACKLE;
@@ -5515,9 +6046,10 @@
     const hideA = locked && !launching && !xs;
     document.querySelectorAll('[data-graph]').forEach((b) => {
       b.textContent = names[b.dataset.graph];
-      b.hidden = b.dataset.graph === 'a' && hideA;
+      b.hidden = (b.dataset.graph === 'a' && hideA) || !names[b.dataset.graph];
     });
     // an equilibrium problem has no motion to graph
+    $('scene').parentElement.classList.toggle('tall', state.scenario === 'chaos');
     const isLab = isFma();
     const noGraph = !isLab && (!!(sim && sim.static) || !!(xs && xs.noGraph && analysis.ok && xs.noGraph(analysis)));
     $('tab-graph').hidden = noGraph;
@@ -5528,11 +6060,21 @@
     if (noGraph && ui.tab === 'graph') showTab('check');
     $('fbd-caption').textContent = xs && xs.fbdCaption && analysis.ok ? xs.fbdCaption(analysis, anim.t) : '';
     $('fbd-caption').hidden = !$('fbd-caption').textContent;
+    // free-body diagrams that don't apply (the double pendulum)
+    const noFbd = !!(xs && xs.noFbd && analysis.ok && xs.noFbd(analysis));
+    $('tab-fbd').hidden = noFbd;
+    if (noFbd && ui.tab === 'fbd') showTab('check');
+    if (!names[ui.graph]) {
+      ui.graph = 'x';
+      document.querySelectorAll('[data-graph]').forEach((x) => x.classList.toggle('on', x.dataset.graph === 'x'));
+    }
     if (ui.graph === 'a' && hideA) {
       ui.graph = 'x';
       document.querySelectorAll('[data-graph]').forEach((x) => x.classList.toggle('on', x.dataset.graph === 'x'));
     }
-    $('graph-hint').textContent = isLab
+ $('graph-hint').textContent = state.scenario === 'chaos'
+      ? 'Each point is the angle and angular velocity at one instant. A closed loop that repeats means regular motion; a tangle that never repeats, and that splits away from its twin, means chaos.'
+      : isLab
       ? 'Each run adds a point. A straight line through the points has slope M (the total mass) and intercept f (the friction).'
       : launching
       ? 'Press Play to draw the graph. On the ramp the block speeds up; in the air vₓ stays constant while v_y grows at g.'
@@ -5559,6 +6101,7 @@
 
   function plusWord() {
     if (!analysis.ok) return '';
+    if (analysis.kind === 'chaos') return '+ = counterclockwise from straight down';
     if (xsFor(analysis)) return state.scenario === 'body' && cur().mode === 'sprint' ? '+ = forward' : '+ = up';
     const b = analysis.bodies[ui.track];
     if (analysis.kind === 'atwood') return ui.track === 0 ? '+ = up' : '+ = down';
@@ -5575,6 +6118,15 @@
     }
     const m = bodyMotion(ui.track, anim.t);
     $('ro-t').textContent = anim.t.toFixed(2) + ' s';
+    const xr = xsFor(analysis);
+    if (xr && xr.readouts) {
+      const [r1, r2] = xr.readouts(analysis, anim.t);
+      $('ro-d-label').textContent = r1.label;
+      $('ro-d').textContent = r1.value;
+      $('ro-v-label').textContent = r2.label;
+      $('ro-v').textContent = r2.value;
+      return;
+    }
     if (m.air !== undefined) {
       $('ro-d-label').textContent = m.air ? 'Distance from edge' : 'Displacement';
       $('ro-v-label').textContent = m.air ? 'Speed' : 'Velocity';
@@ -5661,6 +6213,8 @@
       drawFBD();
       $('fbd-caption').textContent = ELEV.fbdCaption(analysis, anim.t);
     }
+    const xl = xsFor(analysis);
+    if (xl && xl.liveFbd && ui.tab === 'fbd') drawFBD();
     if (anim.playing) requestAnimationFrame(frame);
   }
 
@@ -5758,6 +6312,7 @@
       ui.track = parseInt(e.target.value, 10);
       updateReadouts();
       updateStatus();
+      drawScene();
       drawGraph();
     });
     $('chk-fbd-scale').addEventListener('change', (e) => {

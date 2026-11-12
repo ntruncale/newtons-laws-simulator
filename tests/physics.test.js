@@ -359,3 +359,37 @@ test('block and tackle', () => {
   const up = P.solveTackle({ m: 120, n: 3, g, a: 0.5 });
   close(up.T, 120 * (g + 0.5) / 3);
 });
+
+test('single pendulum: small swings have period 2*pi*sqrt(L/g)', () => {
+  const p = { g, L: 1, b: 0 };
+  const run = P.simulatePendulum('single', p, [0.05, 0], 10, 0.0005, 0.0005);
+  // find successive upward zero crossings of theta
+  const th = run.y[0];
+  const cross = [];
+  for (let i = 1; i < th.length; i++) if (th[i - 1] < 0 && th[i] >= 0) cross.push(run.t[i]);
+  const period = (cross[cross.length - 1] - cross[0]) / (cross.length - 1);
+  close(period, 2 * Math.PI * Math.sqrt(1 / g), 2e-3);
+  // energy is conserved
+  close(run.Eend, run.E0, 1e-8);
+});
+
+test('double pendulum conserves energy', () => {
+  const p = { g, m1: 1, m2: 1, L1: 1, L2: 1 };
+  const run = P.simulatePendulum('double', p, [2.1, 0, -0.5, 0], 20, 0.0005);
+  assert.ok(Math.abs(run.Eend - run.E0) / Math.abs(run.E0) < 1e-6, 'energy drift ' + (run.Eend - run.E0));
+});
+
+test('double pendulum: big swings are sensitive to the start, small swings are not', () => {
+  const p = { g, m1: 1, m2: 1, L1: 1, L2: 1 };
+  const sep = (a, b) => {
+    const A = P.simulatePendulum('double', p, a, 15, 0.0005);
+    const B = P.simulatePendulum('double', p, b, 15, 0.0005);
+    const n = A.t.length - 1;
+    return Math.abs(A.y[2][n] - B.y[2][n]);
+  };
+  const d = 0.1 * P.DEG;
+  const small = sep([0.1, 0, 0.1, 0], [0.1 + d, 0, 0.1, 0]);
+  const big = sep([2.1, 0, -0.5, 0], [2.1 + d, 0, -0.5, 0]);
+  assert.ok(small < 0.01, 'small-swing separation ' + small);
+  assert.ok(big > 0.5, 'big-swing separation ' + big);
+});

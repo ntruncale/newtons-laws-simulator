@@ -593,7 +593,105 @@
     return { m, n, g, a, W: m * g, T, ceiling: (n + 1) * T, MA: n };
   }
 
-  const Physics = { DEG, solveAtwood, solveChain, buildChain, linkSigns, launch, solveElevator, solveTraction, solveBody, solveTrafficLight, solveWall, labTrial, fitLine, solveHorseCart, solveTug, solveCrash, solveCarAccel, tiltLab, solveTackle };
+  /* ---------- Chaos: pendulums integrated numerically ---------- */
+  /*
+   * Each system gives the time derivative of its state vector.
+   *   single: y = [theta, omega]          (angle from straight down, rad)
+   *   double: y = [th1, w1, th2, w2]      (both angles from straight down)
+   */
+  const PENDULUMS = {
+    single: {
+      size: 2,
+      rhs(p) {
+        return (y, out) => {
+          out[0] = y[1];
+          out[1] = -(p.g / p.L) * Math.sin(y[0]) - (p.b || 0) * y[1];
+        };
+      },
+      // energy per kilogram (the bob's mass cancels)
+      energy(p, y) {
+        return 0.5 * p.L * p.L * y[1] * y[1] - p.g * p.L * Math.cos(y[0]);
+      },
+    },
+    double: {
+      size: 4,
+      rhs(p) {
+        const { m1, m2, L1, L2, g } = p;
+        const M = m1 + m2;
+        return (y, out) => {
+          const t1 = y[0];
+          const w1 = y[1];
+          const t2 = y[2];
+          const w2 = y[3];
+          const d = t2 - t1;
+          const s = Math.sin(d);
+          const c = Math.cos(d);
+          const den1 = M * L1 - m2 * L1 * c * c;
+          const den2 = (L2 / L1) * den1;
+          out[0] = w1;
+          out[1] = (m2 * L1 * w1 * w1 * s * c + m2 * g * Math.sin(t2) * c + m2 * L2 * w2 * w2 * s - M * g * Math.sin(t1)) / den1;
+          out[2] = w2;
+          out[3] = (-m2 * L2 * w2 * w2 * s * c + M * (g * Math.sin(t1) * c - L1 * w1 * w1 * s - g * Math.sin(t2))) / den2;
+        };
+      },
+      energy(p, y) {
+        const { m1, m2, L1, L2, g } = p;
+        const [t1, w1, t2, w2] = y;
+        const ke = 0.5 * m1 * L1 * L1 * w1 * w1 + 0.5 * m2 * (L1 * L1 * w1 * w1 + L2 * L2 * w2 * w2 + 2 * L1 * L2 * w1 * w2 * Math.cos(t1 - t2));
+        const pe = -(m1 + m2) * g * L1 * Math.cos(t1) - m2 * g * L2 * Math.cos(t2);
+        return ke + pe;
+      },
+    },
+  };
+
+  /**
+   * Fourth-order Runge-Kutta from y0 for time T with step dt.
+   * Keeps every `every`-th step: { t: Float64Array, y: [Float64Array per component] }.
+   */
+  function integrate(f, y0, dt, T, every = 1) {
+    const n = y0.length;
+    const steps = Math.ceil(T / dt);
+    const keep = Math.floor(steps / every) + 1;
+    const t = new Float64Array(keep);
+    const out = Array.from({ length: n }, () => new Float64Array(keep));
+    let y = Float64Array.from(y0);
+    const k1 = new Float64Array(n);
+    const k2 = new Float64Array(n);
+    const k3 = new Float64Array(n);
+    const k4 = new Float64Array(n);
+    const tmp = new Float64Array(n);
+    let k = 0;
+    const save = (step) => {
+      t[k] = step * dt;
+      for (let i = 0; i < n; i++) out[i][k] = y[i];
+      k++;
+    };
+    save(0);
+    for (let step = 1; step <= steps; step++) {
+      f(y, k1);
+      for (let i = 0; i < n; i++) tmp[i] = y[i] + 0.5 * dt * k1[i];
+      f(tmp, k2);
+      for (let i = 0; i < n; i++) tmp[i] = y[i] + 0.5 * dt * k2[i];
+      f(tmp, k3);
+      for (let i = 0; i < n; i++) tmp[i] = y[i] + dt * k3[i];
+      f(tmp, k4);
+      for (let i = 0; i < n; i++) y[i] += (dt / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]);
+      if (step % every === 0 && k < keep) save(step);
+    }
+    return { t: t.subarray(0, k), y: out.map((a) => a.subarray(0, k)) };
+  }
+
+  /** Run a pendulum system. Returns samples every `sample` seconds plus the energy drift. */
+  function simulatePendulum(sys, p, y0, T, dt = 0.001, sample = 0.01) {
+    const S = PENDULUMS[sys];
+    const every = Math.max(1, Math.round(sample / dt));
+    const run = integrate(S.rhs(p), y0, dt, T, every);
+    const E0 = S.energy(p, y0);
+    const last = run.y.map((a) => a[a.length - 1]);
+    return { ...run, dtSample: dt * every, E0, Eend: S.energy(p, last) };
+  }
+
+  const Physics = { DEG, solveAtwood, solveChain, buildChain, linkSigns, launch, solveElevator, solveTraction, solveBody, solveTrafficLight, solveWall, labTrial, fitLine, solveHorseCart, solveTug, solveCrash, solveCarAccel, tiltLab, solveTackle, PENDULUMS, integrate, simulatePendulum };
   if (typeof module !== 'undefined' && module.exports) module.exports = Physics;
   else global.Physics = Physics;
 })(typeof window !== 'undefined' ? window : globalThis);
